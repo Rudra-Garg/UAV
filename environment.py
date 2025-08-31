@@ -1,8 +1,10 @@
 # environment.py
 """
 Implements the VECN (Vehicular Edge Computing Network) Environment.
-Manages the state of all entities and the communication models.
-Now includes logic for state/reward generation and action handling.
+Manages the state of all entities (UAVs, Vehicles), their interactions,
+and the communication models based on the research paper. It provides
+methods to reset the simulation, execute a step, and generate state/reward
+information for the RL agents.
 """
 import numpy as np
 
@@ -12,6 +14,7 @@ from entities import Vehicle, UAV, CloudComputingCenter
 
 class VECNEnvironment:
     def __init__(self):
+        """Initializes the environment's properties."""
         self.width = AREA_WIDTH
         self.height = AREA_HEIGHT
         self.vehicles = []
@@ -19,94 +22,110 @@ class VECNEnvironment:
         self.ccc = CloudComputingCenter()
         self.time_step = 0
 
-    def reset(self, num_uavs=0):
-        """Resets the environment. Can now specify number of UAVs."""
+    def reset(self, num_uavs=0, num_vehicles=NUM_VEHICLES):
+        """
+        Resets the environment to a new initial state.
+
+        Args:
+            num_uavs (int): The number of UAVs to create for this episode.
+            num_vehicles (int): The number of vehicles to create. This is
+                                essential for running evaluation scenarios.
+
+        Returns:
+            list of np.array: The initial list of local states for the MADDPG agents.
+        """
         self.time_step = 0
-        self.vehicles = [Vehicle(i) for i in range(NUM_VEHICLES)]
+        self.vehicles = [Vehicle(i) for i in range(num_vehicles)]
         self.uavs = [UAV(i) for i in range(num_uavs)]
         return self.get_maddpg_states()
 
-    def add_uavs(self, num_uavs):
-        """Helper to add UAVs, now done primarily in reset."""
-        self.uavs = [UAV(i) for i in range(num_uavs)]
-        print(f"Added {len(self.uavs)} UAVs to the environment.")
-
     def step(self, actions):
         """
-        Advance the environment by one time step based on agent actions.
-        'actions' is a list of actions, one for each UAV.
+        Advances the environment by one time step based on agent actions.
+
+        Args:
+            actions (list of np.array): A list of actions, one for each UAV.
+
+        Returns:
+            tuple: A tuple containing (next_states, rewards, done).
         """
-        # 1. Update UAV positions based on actions
+        # 1. Update UAV positions based on the actions from the MADDPG controller.
+        # The action is a normalized vector [-1, 1], which we scale by a max speed.
         for i, uav in enumerate(self.uavs):
-            # Action is [-1, 1], scale it to a reasonable movement speed
             displacement = np.array([actions[i][0], actions[i][1], 0]) * UAV_MAX_SPEED
             uav.move(displacement)
 
-        # 2. Move all vehicles
+        # 2. Move all vehicles according to their own velocity.
         for vehicle in self.vehicles:
             vehicle.move()
 
-        # 3. Calculate rewards and get next state
-        # For simplicity, we'll use a placeholder reward logic.
-        # A more complex implementation would simulate task offloading.
+        # 3. Calculate rewards based on the new state and get the next state.
         rewards = self._calculate_rewards()
         next_states = self.get_maddpg_states()
 
-        # Done is true if the inner episode ends
+        # 4. Check if the inner episode has terminated.
         self.time_step += 1
         done = self.time_step >= INNER_STEPS
 
         return next_states, rewards, done
 
-    # --- State and Reward Calculation ---
-
     def _calculate_rewards(self):
         """
-        Calculates a reward for each UAV.
-        A simple reward: +1 for each vehicle in range, -0.1 for being too close to another UAV.
+        Calculates a reward for each UAV using vectorized operations for speed.
+        The reward function encourages vehicle coverage and discourages collisions.
+
+        Returns:
+            list of float: A list containing the shared global reward for each agent.
         """
-        rewards = np.zeros(len(self.uavs))
-        for i, uav in enumerate(self.uavs):
-            # Reward for coverage
-            vehicles_in_range = 0
-            for vehicle in self.vehicles:
-                if self.get_distance(uav, vehicle) <= UAV_COMMUNICATION_RANGE:
-                    vehicles_in_range += 1
-            rewards[i] += vehicles_in_range
+        if not self.uavs:
+            return []
 
-            # Penalty for collision risk
-            for j, other_uav in enumerate(self.uavs):
-                if i != j and self.get_distance(uav, other_uav) < MIN_UAV_DISTANCE:
-                    rewards[i] -= 10  # Strong penalty
+        num_uavs = len(self.uavs)
+        rewards = np.zeros(num_uavs)
 
-        # Return a shared global reward (average of individual rewards) to encourage cooperation
+        # Vectorized Coverage Reward: Calculate all-pairs distances between UAVs and Vehicles
+        uav_positions = np.array([uav.position for uav in self.uavs])
+        vehicle_positions = np.array([v.position for v in self.vehicles])
+        dist_matrix_uv = np.linalg.norm(uav_positions[:, np.newaxis, :] - vehicle_positions[np.newaxis, :, :], axis=2)
+        vehicles_in_range = np.sum(dist_matrix_uv <= UAV_COMMUNICATION_RANGE, axis=1)
+        rewards += vehicles_in_range
+
+        # Vectorized Collision Penalty: Calculate all-pairs distances between UAVs
+        if num_uavs > 1:
+            dist_matrix_uu = np.linalg.norm(uav_positions[:, np.newaxis, :] - uav_positions[np.newaxis, :, :], axis=2)
+            np.fill_diagonal(dist_matrix_uu, np.inf)  # Ignore self-distance
+            collision_penalties = np.sum(dist_matrix_uu < MIN_UAV_DISTANCE, axis=1) * -10.0  # Strong penalty
+            rewards += collision_penalties
+
+        # Use a shared global reward (the average) to encourage cooperative behavior.
         global_reward = np.mean(rewards)
-        return [global_reward] * len(self.uavs)
+        return [global_reward] * num_uavs
 
     def get_maddpg_states(self):
         """
-        Returns a list of local states, one for each MADDPG agent.
-        State: [norm_pos_x, norm_pos_y, users_in_range, tasks_processed (placeholder), profit (placeholder)]
+        Returns a list of local states, one for each MADDPG agent (UAV).
+        The state features are normalized to improve learning stability.
+
+        Returns:
+            list of np.array: The list of local states.
         """
         if not self.uavs:
             return []
 
         all_states = []
         for uav in self.uavs:
-            # Normalize position
+            # Normalize position to be between 0 and 1.
             norm_pos_x = uav.position[0] / self.width
             norm_pos_y = uav.position[1] / self.height
 
-            # Count users in range
             users_in_range = 0
             for vehicle in self.vehicles:
                 if self.get_distance(uav, vehicle) <= UAV_COMMUNICATION_RANGE:
                     users_in_range += 1
 
-            # Placeholders for more complex state features
-            tasks_processed = 0
+            # Placeholders for more complex state features from the paper.
+            tasks_processed = 0;
             profit = 0
-
             state = [norm_pos_x, norm_pos_y, users_in_range, tasks_processed, profit]
             all_states.append(np.array(state))
 
@@ -114,28 +133,33 @@ class VECNEnvironment:
 
     def get_ddqn_state(self):
         """
-        Returns the global state for the DDQN agent.
-        State: [tasks_completed, num_uavs, total_cost, total_profit, total_latency, users_covered]
-        This is a placeholder as we aren't simulating the full economy yet.
+        Returns the global state of the entire system for the DDQN agent.
+        This includes aggregate metrics like total profit and cost.
+
+        Returns:
+            np.array: The global state vector.
         """
         num_uavs = len(self.uavs)
 
-        # Placeholder calculations
-        tasks_completed = np.random.randint(50, 100) * num_uavs
-        total_cost = 10 * num_uavs  # Simplified cost model
-        total_profit = (np.random.rand() * 50 - 10) * num_uavs
-        total_latency = 1.0 / (num_uavs + 1e-6)
-
         covered_vehicles = set()
-        for uav in self.uavs:
-            for v in self.vehicles:
-                if self.get_distance(uav, v) <= UAV_COMMUNICATION_RANGE:
-                    covered_vehicles.add(v.id)
+        if num_uavs > 0:
+            for uav in self.uavs:
+                for v in self.vehicles:
+                    if self.get_distance(uav, v) <= UAV_COMMUNICATION_RANGE:
+                        covered_vehicles.add(v.id)
         users_covered = len(covered_vehicles)
 
-        return np.array([tasks_completed, num_uavs, total_cost, total_profit, total_latency, users_covered])
+        # More realistic profit model for fair evaluation
+        revenue = users_covered * 1.5
+        cost = num_uavs * 10.0
+        total_profit = revenue - cost
 
-    # --- Communication Modeling (Unchanged from Phase 1) ---
+        tasks_completed = users_covered * TASKS_PER_VEHICLE
+        total_latency = 1.0 / (num_uavs + 1e-6)
+
+        return np.array([tasks_completed, num_uavs, cost, total_profit, total_latency, users_covered])
+
+    # --- Communication Modeling Methods (Unchanged) ---
     def get_distance(self, entity1, entity2):
         return np.linalg.norm(entity1.position - entity2.position)
 
