@@ -1,8 +1,8 @@
 # config.py
 """
 Centralized configuration file for simulation parameters.
-This version adheres as strictly as possible to the values and models
-described in the research paper. All assumptions are clearly noted.
+CORRECTED for Phase 4: The MADDPG_STATE_DIM is now correctly set to 7 to
+account for the addition of the UAV status feature.
 """
 
 import torch
@@ -15,15 +15,12 @@ AREA_WIDTH = 10000
 AREA_HEIGHT = 10000
 
 # --- UAV Parameters (From Paper Section V & Table II) ---
-UAV_ALTITUDE = 50  # From Section V-A
-UAV_COMMUNICATION_RANGE = 1000  # From Section V-A
-MIN_UAV_DISTANCE = 500  # From Section V-A, D_min
-UAV_MAX_SPEED = 50  # General assumption for simulation dynamics
-# --- From Table II, using lower-bound values ---
-# NOTE: Paper specifies Fux in MHz, likely a typo for Gcycles/sec or similar.
-# We interpret 2.2MHz as a proxy for 22 Gcycles/sec for a powerful edge node.
-UAV_COMPUTATIONAL_RESOURCES = 22e9  # Based on F_ux range [2.2, 2.5] (interpreted as Gcycles/sec)
-UAV_CACHE_SIZE = 10  # General assumption, as paper's P_ux is in GB.
+UAV_ALTITUDE = 50
+UAV_COMMUNICATION_RANGE = 1000
+MIN_UAV_DISTANCE = 500
+UAV_MAX_SPEED = 50
+UAV_COMPUTATIONAL_RESOURCES = 22e9
+UAV_CACHE_SIZE = 10
 
 # --- Vehicle Parameters (From Paper Section V-A) ---
 NUM_VEHICLES = 100
@@ -32,27 +29,28 @@ VEHICLE_MAX_SPEED = 3.0
 TASKS_PER_VEHICLE = 6
 
 # --- Task Parameters (From Paper Section V-A) ---
-TASK_DATA_SIZE_RANGE = (50, 100)  # Mbit. FROM PAPER. This is the key high value.
-NUM_SERVICE_TYPES = 100  # From Section V-A
-# --- ASSUMPTION: The paper does not specify these crucial task parameters ---
-# We assume a computational load that is challenging but possible for the UAVs.
+TASK_DATA_SIZE_RANGE = (50, 100)  # Mbit
+NUM_SERVICE_TYPES = 100
 TASK_CPU_CYCLES_PER_BIT = 200
-# We MUST assume a high latency constraint to make the problem solvable with the large data sizes.
-LATENCY_CONSTRAINT_RANGE = (10.0, 20.0)  # seconds.
+LATENCY_CONSTRAINT_RANGE = (10.0, 20.0)
 
-# --- Economic & Energy Parameters ---
-# --- ASSUMPTION: The paper defines the formulas but not the Beta/Delta weight values. ---
-# These values are chosen to create a challenging but stable economic simulation.
-# Cost function weights (Eq. 18)
-BETA_COMPUTATION = 1e-12  # Must be very small as F_ux is very large
-BETA_MAINTENANCE = 1000.0  # High fixed cost to deploy a UAV
-# Gain function weights (Eq. 19 & 20)
-DELTA_LATENCY = 5.0  # Prioritize completing tasks quickly
+# --- Economic & Reward Parameters ---
+BETA_COMPUTATION = 1e-12
+BETA_MAINTENANCE = 1000.0
+DELTA_LATENCY = 5.0
 DELTA_SIZE = 0.5
 DELTA_COMPUTATION = 0.5
-# Other economic params
-ENERGY_PER_SECOND_PROCESSING = 0.5  # gamma_0 in paper, an assumption
-REWARD_SCALING_FACTOR = 1.0  # The economy is now defined by Beta/Delta, less scaling needed.
+REWARD_SCALING_FACTOR = 1.0
+
+# --- Energy Parameters (from Phase 2) ---
+UAV_ENERGY_CAPACITY_JOULES = (800000.0, 1000000.0)
+ENERGY_HOVER_WATT = 200.0
+ENERGY_COMPUTATION_JOULE_PER_GCYCLE = 10e-9
+ENERGY_COMM_JOULE_PER_MBIT = 0.5
+ENERGY_REWARD_PENALTY = 0.0001
+
+# --- Dynamic Caching Parameters (from Phase 3) ---
+CACHE_UPDATE_PROBABILITY = 0.2  # 20% chance
 
 # --- Communication & Power (From Paper Table II) ---
 BANDWIDTH_UAV_USER = 2e6
@@ -60,13 +58,13 @@ BANDWIDTH_UAV_UAV = 3e6
 BANDWIDTH_UAV_CCC = 20e6
 NOISE_POWER_SPECTRAL_DENSITY = -96
 CARRIER_FREQUENCY = 2e9
-POWER_UAV_USER = 0.5  # Average of range [0.1, 1.0] W
-POWER_UAV_UAV = 0.7  # Average of range [0.4, 1.0] W
-POWER_CCC = 5  # Average of range [2, 8] W
+POWER_UAV_USER = 0.5
+POWER_UAV_UAV = 0.7
+POWER_CCC = 5
 ETA_LOS = 1.8
-ETA_NLOS = 30  # From Table II
+ETA_NLOS = 30
 
-# --- Path Loss Parameters (From Paper Table II) ---
+# --- Path Loss Parameters (Unchanged) ---
 C = 3e8
 LOS_X0 = 11.95
 LOS_Y0 = 0.136
@@ -88,7 +86,8 @@ DDQN_EPSILON_DECAY = 0.995
 DDQN_TAU = 0.005
 
 # --- MADDPG (Inner Layer) Parameters ---
-MADDPG_STATE_DIM = 5
+# Phase 4 CORRECTION: State dimension increased by 1 to include UAV status
+MADDPG_STATE_DIM = 7  # Was 6
 MADDPG_ACTION_DIM = 2
 MADDPG_LEARNING_RATE_ACTOR = 0.0001
 MADDPG_LEARNING_RATE_CRITIC = 0.001
