@@ -27,11 +27,14 @@ NUM_VEHICLES = 100
 VEHICLE_MIN_SPEED = 1.5
 VEHICLE_MAX_SPEED = 3.0
 TASKS_PER_VEHICLE = 6
+USE_DYNAMIC_DEMAND = True       # Master switch to enable/disable this feature
+CONGESTION_NUM_ZONES = 3        # Number of "congestion" clusters to create
+TASKS_PER_VEHICLE_CONGESTED = 8 # Number of tasks for vehicles inside a congestion zone
 
 # --- Task Parameters (From Paper Section V-A) ---
 TASK_DATA_SIZE_RANGE = (50, 100)  # Mbit
 NUM_SERVICE_TYPES = 100
-TASK_CPU_CYCLES_PER_BIT = 200
+TASK_CPU_CYCLES_PER_BIT = 0.5
 LATENCY_CONSTRAINT_RANGE = (40.0, 60.0)
 
 # --- Economic & Reward Parameters ---
@@ -63,6 +66,9 @@ POWER_UAV_UAV = 0.7
 POWER_CCC = 5
 ETA_LOS = 1.8
 ETA_NLOS = 30
+USE_ENERGY_PENALTY = False  # If True, subtracts energy cost from profit in reward calculation.
+USE_UAV_STATUS = False      # If True, includes a UAV's IDLE/BUSY status in its MADDPG state.
+
 
 # --- Path Loss Parameters (Unchanged) ---
 C = 3e8
@@ -87,7 +93,7 @@ DDQN_TAU = 0.005
 
 # --- MADDPG (Inner Layer) Parameters ---
 # Phase 4 CORRECTION: State dimension increased by 1 to include UAV status
-MADDPG_STATE_DIM = 7  # Was 6
+MADDPG_STATE_DIM = 7 if USE_UAV_STATUS else 6
 MADDPG_ACTION_DIM = 2
 MADDPG_LEARNING_RATE_ACTOR = 0.0005
 MADDPG_LEARNING_RATE_CRITIC = 0.0005
@@ -96,8 +102,20 @@ MADDPG_BATCH_SIZE = 128
 MADDPG_GAMMA = 0.95
 MADDPG_TAU = 0.01
 
+
+MAX_HOPS = 2
+DYNAMIC_BANDWIDTH = True            # Enable/disable the TDMA bandwidth sharing model
+TDMA_SLOTS_PER_STEP = 10
+
 # --- VISUALIZATION & EVALUATION ---
 VISUALIZATION = False
 MODEL_SAVE_PATH = "models/"
 EVAL_EPISODES = 10
 EVAL_SCENARIO_VEHICLES = range(50, 121, 10)
+SCREEN_WIDTH = 1500
+SCREEN_HEIGHT = 800
+# --- Hybrid Caching Parameters---
+SERVICE_CACHE_SIZE = 2             # Max number of services a UAV can cache
+CONTENT_CACHE_SIZE = 1             # Max number of content items a UAV can cache
+NUM_CONTENT_TYPES = 50             # Number of distinct content types in the simulation
+POPULARITY_ZIPF_ALPHA = 1.2        # Alpha parameter for Zipf distribution for popularity
