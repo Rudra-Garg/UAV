@@ -18,11 +18,14 @@ class Task:
         self.owner_id = owner_vehicle_id
         self.data_size_bits = np.random.uniform(*TASK_DATA_SIZE_RANGE) * 1e6
 
-        # --- MODIFIED: Hybrid service/content model ---
-        self.service_type = np.random.randint(0, NUM_SERVICE_TYPES)
+        # This ensures generated tasks align with what UAVs are likely to have cached.
+        self.service_type = (np.random.zipf(POPULARITY_ZIPF_ALPHA, 1)[0] - 1) % NUM_SERVICE_TYPES
+
         # Tasks now have a chance to require a specific piece of content as well
-        self.content_type = np.random.randint(0, NUM_CONTENT_TYPES) if np.random.rand() < 0.5 else None
-        # --- END OF MODIFICATION ---
+        if np.random.rand() < 0.5:
+            self.content_type = (np.random.zipf(POPULARITY_ZIPF_ALPHA, 1)[0] - 1) % NUM_CONTENT_TYPES
+        else:
+            self.content_type = None
 
         self.cpu_cycles_req = self.data_size_bits * TASK_CPU_CYCLES_PER_BIT
         self.latency_constraint = np.random.uniform(*LATENCY_CONSTRAINT_RANGE)
@@ -81,11 +84,9 @@ class UAV:
         self.status = 'IDLE'
 
         # --- MODIFIED: Initialize separate cache structures ---
-        self.service_cache = []
-        self.content_cache = []
-        self.service_cache_usage_counts = {}
-        self.content_cache_usage_counts = {}
-        self._precache_items()  # Initial caching
+        self.service_cache = set()
+        self.content_cache = set()
+        self._precache_items()
         # --- END OF MODIFICATION ---
 
         # State variables reset each episode
@@ -96,31 +97,23 @@ class UAV:
         self.profit_this_step = 0.0
         self.energy_consumed_this_step = 0.0
 
-    # --- NEW: Helper for initial popular item caching ---
     def _precache_items(self):
-        # Simulate global popularity using a Zipf distribution
-        service_popularity = np.random.zipf(POPULARITY_ZIPF_ALPHA, 1000) % NUM_SERVICE_TYPES
-        content_popularity = np.random.zipf(POPULARITY_ZIPF_ALPHA, 1000) % NUM_CONTENT_TYPES
+        """Fills the cache with a random set of services and content."""
+        # Ensure we don't try to cache more items than exist
+        num_services_to_cache = min(SERVICE_CACHE_SIZE, NUM_SERVICE_TYPES)
+        self.service_cache = set(np.random.choice(range(NUM_SERVICE_TYPES), size=num_services_to_cache, replace=False))
 
-        # Get the most popular unique items to precache
-        popular_services = [item for item, count in
-                            sorted(np.stack(np.unique(service_popularity, return_counts=True)).T, key=lambda x: x[1],
-                                   reverse=True)]
-        popular_content = [item for item, count in
-                           sorted(np.stack(np.unique(content_popularity, return_counts=True)).T, key=lambda x: x[1],
-                                  reverse=True)]
-
-        self.service_cache = popular_services[:SERVICE_CACHE_SIZE]
-        self.content_cache = popular_content[:CONTENT_CACHE_SIZE]
-
-        self.service_cache_usage_counts = {service: 0 for service in self.service_cache}
-        self.content_cache_usage_counts = {content: 0 for content in self.content_cache}
+        num_content_to_cache = min(CONTENT_CACHE_SIZE, NUM_CONTENT_TYPES)
+        self.content_cache = set(np.random.choice(range(NUM_CONTENT_TYPES), size=num_content_to_cache, replace=False))
 
     def has_service(self, service_type):
         return service_type in self.service_cache
 
     def has_content(self, content_type):
-        return content_type is None or content_type in self.content_cache
+        """Checks for content. Returns True if task requires no content."""
+        if content_type is None:
+            return True
+        return content_type in self.content_cache
 
     def move(self, action):
         self.position += action
@@ -133,24 +126,6 @@ class UAV:
         self.current_energy -= consumed
         self.energy_consumed_this_step += consumed
 
-    def record_service_cache_hit(self, service_type):
-        if service_type in self.service_cache_usage_counts:
-            self.service_cache_usage_counts[service_type] += 1
-
-    # --- NEW: Separate LFU cache update logic for services ---
-    def update_service_cache(self, new_service_type):
-        if new_service_type in self.service_cache: return
-        if len(self.service_cache) < SERVICE_CACHE_SIZE:
-            self.service_cache.append(new_service_type)
-            self.service_cache_usage_counts[new_service_type] = 1
-        else:
-            if not self.service_cache_usage_counts: return
-            lfu_service = min(self.service_cache_usage_counts, key=self.service_cache_usage_counts.get)
-            self.service_cache.remove(lfu_service)
-            del self.service_cache_usage_counts[lfu_service]
-            self.service_cache.append(new_service_type)
-            self.service_cache_usage_counts[new_service_type] = 1
-
     def reset_for_episode(self):
         self.F_remain = self.F_total
         self.tasks_processed_count = 0
@@ -158,9 +133,7 @@ class UAV:
         self.current_energy = self.max_energy
         self.energy_consumed_this_step = 0.0
         self.status = 'IDLE'
-        # --- MODIFIED: Re-run precaching logic on reset ---
         self._precache_items()
-        # --- END OF MODIFICATION ---
 
     def __repr__(self):
         return f"UAV(id={self.id}, status={self.status}, energy={self.current_energy / self.max_energy:.2%})"

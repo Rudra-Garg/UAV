@@ -32,8 +32,8 @@ class OUPOS_Agent:
 
 
 class MRUPRS_Agent:
-    def __init__(self, env, num_uavs=5):
-        self.num_uavs = num_uavs
+    def __init__(self, env):
+        self.num_uavs =  np.random.randint(3, 8)
 
     def select_actions(self, env, states):
         return [(np.random.rand(2) * 2 - 1) * UAV_MAX_SPEED for _ in range(self.num_uavs)]

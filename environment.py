@@ -6,6 +6,7 @@ datarate has been moved outside the class to be a standalone helper function.
 This is necessary because Numba's `nopython=True` mode cannot handle
 class instances ('self') as arguments.
 """
+import logging
 import math
 from collections import deque
 
@@ -15,6 +16,9 @@ from scipy.cluster.vq import kmeans
 
 from config import *
 from entities import Vehicle, UAV, CloudComputingCenter
+
+# Get a logger for this module
+logger = logging.getLogger(__name__)
 
 
 # --- Numba-Optimized Helper Functions ---
@@ -58,57 +62,130 @@ class VECNEnvironment:
         self.width, self.height, self.vehicles, self.uavs, self.ccc = AREA_WIDTH, AREA_HEIGHT, [], [], CloudComputingCenter()
         self.time_step, self.total_tasks_in_step, self.completed_tasks_in_step = 0, 0, 0
 
+    def _initialize_vehicle_positions_with_hotspots(self, num_vehicles, num_hotspots, hotspot_radius, hotspot_ratio):
+        """
+        Initializes vehicle positions with a number of hotspots (dense areas)
+        and some randomly scattered vehicles.
+        """
+        self.vehicles = []
+
+        if num_hotspots == 0:
+            self.vehicles = [Vehicle(i) for i in range(num_vehicles)]
+            return
+
+        hotspots = [np.random.rand(2) * np.array([self.width, self.height]) for _ in range(num_hotspots)]
+
+        num_hotspot_vehicles = int(num_vehicles * hotspot_ratio)
+        num_random_vehicles = num_vehicles - num_hotspot_vehicles
+
+        vehicle_id_counter = 0
+
+        # Place vehicles around hotspots
+        for i in range(num_hotspot_vehicles):
+            vehicle = Vehicle(vehicle_id_counter)
+            chosen_hotspot = hotspots[i % num_hotspots]
+            angle = np.random.uniform(0, 2 * np.pi)
+            radius = np.random.uniform(0, hotspot_radius)
+            offset = np.array([radius * np.cos(angle), radius * np.sin(angle)])
+
+            pos_2d = chosen_hotspot + offset
+            vehicle.position = np.append(pos_2d, 0)
+
+            # Ensure vehicles stay within the area boundaries
+            vehicle.position[0] = np.clip(vehicle.position[0], 0, self.width)
+            vehicle.position[1] = np.clip(vehicle.position[1], 0, self.height)
+
+            self.vehicles.append(vehicle)
+            vehicle_id_counter += 1
+
+        # Place the rest of the vehicles randomly
+        for _ in range(num_random_vehicles):
+            vehicle = Vehicle(vehicle_id_counter)
+            # This is the original random placement
+            pos_2d = np.random.rand(2) * np.array([self.width, self.height])
+            vehicle.position = np.append(pos_2d, 0)
+            self.vehicles.append(vehicle)
+            vehicle_id_counter += 1
+    # ... (rest of the class methods are unchanged) ...
+
     def reset(self, num_uavs=0, num_vehicles=NUM_VEHICLES):
         """
-        Resets the environment.
-        MODIFIED: Now includes logic to create congestion zones with higher task loads.
+        Resets the environment with a randomly chosen traffic scenario and deploys UAVs intelligently.
         """
+        logger.info("Resetting environment with %d UAVs and %d vehicles.", num_uavs, num_vehicles)
         self.time_step = 0
-        self.uavs = [UAV(i) for i in range(num_uavs)]
-        self.vehicles = [Vehicle(i) for i in range(num_vehicles)]
 
-        # --- NEW: Dynamic Demand Generation based on Vehicle Congestion ---
+        # --- SCENARIO SELECTION LOGIC ---
+        # Randomly choose a scenario for this episode based on the weights in config
+        chosen_scenario_name = np.random.choice(
+            TRAFFIC_SCENARIOS['SCENARIO_NAMES'],
+            p=TRAFFIC_SCENARIOS['SCENARIO_WEIGHTS']
+        )
+        scenario_params = TRAFFIC_SCENARIOS['SCENARIOS'][chosen_scenario_name]
+        logger.info(f"Episode starting with traffic scenario: '{chosen_scenario_name}'")
+
+        # Initialize vehicle positions based on the chosen scenario
+        self._initialize_vehicle_positions_with_hotspots(
+            num_vehicles=num_vehicles,
+            num_hotspots=scenario_params['num_hotspots'],
+            hotspot_radius=scenario_params['hotspot_radius'],
+            hotspot_ratio=scenario_params['hotspot_ratio']
+        )
+
+        centroids = []
+
         if USE_DYNAMIC_DEMAND and self.vehicles:
             vehicle_positions = np.array([v.position[:2] for v in self.vehicles])
 
-            # Use K-means to find cluster centers (congestion zones)
-            # Note: k-means requires at least as many points as clusters
-            num_clusters = min(CONGESTION_NUM_ZONES, len(self.vehicles))
+            num_clusters_to_find = scenario_params['num_hotspots']
+            # Ensure we don't try to find more clusters than we have vehicles
+            num_clusters = min(num_clusters_to_find, len(self.vehicles))
+            congested_vehicle_ids = set()
             if num_clusters > 0:
+                logger.debug("Finding %d congestion zones for dynamic demand.", num_clusters)
                 centroids, _ = kmeans(vehicle_positions, num_clusters, iter=10)
 
-                # Identify which vehicles are in a "congested" zone
-                congested_vehicle_ids = set()
                 for i, pos in enumerate(vehicle_positions):
-                    # Check distance to each congestion centroid
                     for centroid in centroids:
-                        if np.linalg.norm(pos - centroid) < (UAV_COMMUNICATION_RANGE / 2): # Heuristic radius
+                        if np.linalg.norm(pos - centroid) < (UAV_COMMUNICATION_RANGE / 2):
                             congested_vehicle_ids.add(self.vehicles[i].id)
                             break
-
-            # Generate tasks based on whether the vehicle is in a congested zone
             for v in self.vehicles:
                 if v.id in congested_vehicle_ids:
                     v.generate_tasks(num_tasks=TASKS_PER_VEHICLE_CONGESTED)
                 else:
                     v.generate_tasks(num_tasks=TASKS_PER_VEHICLE)
         else:
-            # Original behavior if dynamic demand is off or no vehicles
             for v in self.vehicles:
                 v.generate_tasks()
-        # --- END OF NEW SECTION ---
+
+        # Initialize UAVs and place them at the identified centroids
+        self.uavs = [UAV(i) for i in range(num_uavs)]
+        if self.uavs and len(centroids) > 0: # Check length of centroids instead of .any() for robustness
+            for i, uav in enumerate(self.uavs):
+                centroid_to_assign = centroids[i % len(centroids)]
+                offset = (np.random.rand(2) * 2 - 1) * 100
+                uav.position[0] = centroid_to_assign[0] + offset[0]
+                uav.position[1] = centroid_to_assign[1] + offset[1]
 
         return self.get_maddpg_states()
 
     def step(self, actions):
         # ... (step function logic is correct and unchanged) ...
         for uav in self.uavs:
-            uav.energy_consumed_this_step = 0.0
+            # uav.energy_consumed_this_step = 0.0
             uav.profit_this_step = 0.0
+
         self._update_active_tasks()
         for i, uav in enumerate(self.uavs): uav.move(np.array([actions[i][0], actions[i][1], 0]) * UAV_MAX_SPEED)
         for vehicle in self.vehicles: vehicle.move()
-        self._assign_new_tasks()
+
+        # Use the config flag to choose which assignment logic to run
+        if USE_SIMPLIFIED_OFFLOADING:
+            self._assign_new_tasks_simplified()
+        else:
+            self._assign_new_tasks()
+
         self._consume_hover_energy()
         rewards = self._calculate_rewards()
         next_states = self.get_maddpg_states()
@@ -130,12 +207,21 @@ class VECNEnvironment:
             return []
 
         rewards = []
+        total_profit = 0
+        total_energy_penalty = 0
+
         for uav in self.uavs:
             reward = uav.profit_this_step
+            total_profit += reward
             # Conditionally apply the energy penalty
             if USE_ENERGY_PENALTY:
-                reward -= uav.energy_consumed_this_step * ENERGY_REWARD_PENALTY
+                penalty = uav.energy_consumed_this_step * ENERGY_REWARD_PENALTY
+                reward -= penalty
+                total_energy_penalty += penalty
             rewards.append(reward)
+            uav.energy_consumed_this_step = 0.0
+
+        logger.debug("Reward calc: Profit=%.2f, EnergyPenalty=%.4f", total_profit, total_energy_penalty)
 
         global_reward = np.mean(rewards) if rewards else 0
         return [global_reward * REWARD_SCALING_FACTOR] * len(self.uavs)
@@ -205,7 +291,7 @@ class VECNEnvironment:
     def calculate_datarate_user_to_uav(self, user, uav, num_sharing_users=1):
         """
         Calculates the data rate from a user to a UAV, considering TDMA-based
-        bandwidth sharing if enabled in the config.
+        bandwidth sharing if enabled in the 
         """
         # If dynamic bandwidth is disabled, or if there's only one user, use the full bandwidth.
         if not DYNAMIC_BANDWIDTH or num_sharing_users <= 1:
@@ -270,7 +356,7 @@ class VECNEnvironment:
         # BFS setup
         start_idx = self.uavs.index(entry_uav)
         queue = deque([(start_idx, [start_idx])])
-        visited = {start_idx}
+        visited = set()
 
         while queue:
             current_idx, path = queue.popleft()
@@ -281,9 +367,9 @@ class VECNEnvironment:
             current_uav = self.uavs[current_idx]
             # Check if this UAV can process (has service and resources)
             if (current_uav.has_service(task.service_type) and
-                current_uav.has_content(task.content_type) and
-                current_uav.F_remain >= task.cpu_cycles_req and
-                current_uav.status == 'IDLE'):
+                    current_uav.has_content(task.content_type) and
+                    current_uav.F_remain >= task.cpu_cycles_req and
+                    current_uav.status == 'IDLE'):
                 # If we were given a specific list of candidates, ensure this UAV is one of them
                 if target_uav_candidates is None or current_uav in target_uav_candidates:
                     return path
@@ -291,7 +377,7 @@ class VECNEnvironment:
             # Enqueue neighbors if hops < MAX_HOPS
             if len(path) < MAX_HOPS + 1:  # +1 for starting point
                 for neighbor_idx in graph[current_idx]:
-                    if neighbor_idx not in visited:
+                    if neighbor_idx not in path:  # simple cycle check
                         queue.append((neighbor_idx, path + [neighbor_idx]))
 
         return []  # No path found
@@ -326,74 +412,64 @@ class VECNEnvironment:
     def _update_active_tasks(self):
         all_tasks = [task for vehicle in self.vehicles for task in vehicle.tasks]
         for task in all_tasks:
+            original_status = task.status
+
             if task.status == 'UPLOADING' and self.time_step >= task.upload_complete_time:
-                if len(task.hop_path) > 1:
+                # After uploading, if there's a different target, it needs relaying.
+                if task.target_uav and task.target_uav.id != task.entry_uav.id:
                     task.status = 'RELAYING'
+                # If target is cloud (None) it also needs relaying.
+                elif task.target_uav is None:
+                    task.status = 'RELAYING'
+                # Otherwise, it was a local computation.
                 else:
                     task.status = 'COMPUTING'
 
-            if task.status == 'RELAYING':
-                if len(task.hop_path) <= 1:
-                    # Fallback to single relay or CCC
-                    task.status = 'COMPUTING'
-                else:
-                    # Handle hop-by-hop
-                    current_hop_idx = task.hop_path.index(task.entry_uav.id)  # Assume entry_uav updated to current
-                    if current_hop_idx + 1 < len(task.hop_path):
-                        next_hop_id = task.hop_path[current_hop_idx + 1]
-                        next_hop_uav = next((u for u in self.uavs if u.id == next_hop_id), None)
-                        if next_hop_uav:
-                            # Calculate relay rate
-                            dist = self._get_distance_obj(task.entry_uav, next_hop_uav)
-                            pl_db = self._calculate_path_loss(dist, task.entry_uav.position[2])
-                            rate = _calculate_datarate_numba(BANDWIDTH_UAV_UAV, POWER_UAV_UAV, pl_db,
-                                                             NOISE_POWER_SPECTRAL_DENSITY)
-
-                            # Relay progress this step (assume 1s timestep)
-                            relayed_this_step = min(rate, task.data_size_bits)  # bits
-                            task.data_size_bits -= relayed_this_step  # Track remaining; wait, actually data is fixed, use progress var
-                            # Better: Add task.relay_progress = 0 initially, increment
-                            # For simplicity, assume full relay in calculated duration, but since async, check if complete
-                            if self.time_step >= task.relay_complete_time:  # Use precalculated, or recalculate dynamically
-                                task.entry_uav.status = 'IDLE'
-                                task.entry_uav = next_hop_uav
-                                task.entry_uav.status = 'BUSY'
-                                if current_hop_idx + 1 == len(task.hop_path) - 1:
-                                    task.status = 'COMPUTING'
-                            # Consume energy
-                            energy_comm = (relayed_this_step / 1e6) * ENERGY_COMM_JOULE_PER_MBIT
-                            task.entry_uav.consume_energy(energy_comm)
+            if task.status == 'RELAYING' and self.time_step >= task.relay_complete_time:
+                task.status = 'COMPUTING'
 
             if task.status == 'COMPUTING' and self.time_step >= task.compute_complete_time:
                 task.status = 'COMPLETED'
                 task.is_completed = True
                 task.completed_latency = self.time_step - task.time_initiated
-                if task.target_uav:
-                    task.target_uav.status = 'IDLE'
-                    task.target_uav.F_remain += task.cpu_cycles_req  # Restore? No, it was deducted, but if completed, ok
+
+                # Assign profit to the entry UAV that initiated the offload
                 if task.entry_uav:
+                    task.profit_generated = self._calculate_earn_task(task, task.completed_latency, task.entry_uav)
                     task.entry_uav.profit_this_step += task.profit_generated
                     task.entry_uav.profit_generated += task.profit_generated
                     task.entry_uav.tasks_processed_count += 1
-                    if task.target_uav and task.entry_uav.id == task.target_uav.id:
-                        task.entry_uav.status = 'IDLE'
-                    elif not task.target_uav and self.time_step >= task.upload_complete_time:
-                        task.entry_uav.status = 'IDLE'
 
-    # Updated _assign_new_tasks
+                # --- CORRECTION: Free up ALL involved UAVs ---
+                if task.entry_uav:
+                    task.entry_uav.status = 'IDLE'
+                if task.target_uav:
+                    task.target_uav.status = 'IDLE'
+                    # Restore computational resources to the processing UAV
+                    task.target_uav.F_remain += task.cpu_cycles_req
+
+            if task.status != original_status:
+                logger.debug("Task %s status changed from %s to %s at step %d.", task.id, original_status, task.status,
+                             self.time_step)
+
     def _assign_new_tasks(self):
         pending_tasks = [task for v in self.vehicles for task in v.tasks if task.status == 'PENDING']
-        if not self.uavs or not pending_tasks: return
 
-        # --- MODIFIED: Build maps for both service and content caches ---
-        service_cache_map = {}
+        # High-level log for the start of the assignment phase
+        logger.debug("Attempting to assign %d pending tasks at step %d.", len(pending_tasks), self.time_step)
+
+        if not self.uavs:
+            logger.debug("No UAVs available, skipping assignment.")
+            return
+
+        # Detailed log for UAV status
         for uav in self.uavs:
-            for st in uav.service_cache:
-                if st not in service_cache_map: service_cache_map[st] = []
-                service_cache_map[st].append(uav)
-        # --- END OF MODIFICATION ---
+            logger.debug(
+                f"UAV {uav.id}: Status={uav.status}, Energy={uav.current_energy:.1f}, F_remain={uav.F_remain:.1f}, "
+                f"Service_cache(size={len(uav.service_cache)}): {uav.service_cache[:5]}, "
+                f"Content_cache(size={len(uav.content_cache)}): {uav.content_cache[:5]}")
 
-        # Pre-calculate TDMA load (from Step 2)
+        # Pre-calculate TDMA load
         uav_potential_load = {uav.id: 0 for uav in self.uavs}
         if DYNAMIC_BANDWIDTH:
             vehicles_with_tasks = {task.owner_id for task in pending_tasks}
@@ -404,127 +480,157 @@ class VECNEnvironment:
                         uav_potential_load[uav.id] += 1
 
         for task in pending_tasks:
-            task.time_initiated = self.time_step
             vehicle = next(v for v in self.vehicles if v.id == task.owner_id)
-            best_latency, best_option = float('inf'), None
             idle_uavs_in_range = [u for u in self.uavs if
                                   u.status == 'IDLE' and self._get_distance_obj(u, vehicle) <= UAV_COMMUNICATION_RANGE]
-            if not idle_uavs_in_range: continue
 
-            # --- MODIFIED: Offloading logic now checks separate caches ---
-            # Local (direct) processing
+            # Detailed log for the task being evaluated
+            logger.debug(
+                f"Evaluating Task {task.id}: {len(idle_uavs_in_range)} idle UAVs in range. Requires service={task.service_type}, content={task.content_type}")
+
+            if not idle_uavs_in_range:
+                continue
+
+            task.time_initiated = self.time_step
+            task_size_mbit = task.data_size_bits / 1e6
+
+            best_local_option = None
+            best_local_latency = float('inf')
+
+            # --- Step 1: Prioritize Local Processing ---
             for entry_uav in idle_uavs_in_range:
                 cost_entry, _ = self._calculate_task_energy_cost(task, 'local_uav', entry_uav)
-                # UAV must have the service program AND any required content
                 if (entry_uav.has_service(task.service_type) and
-                    entry_uav.has_content(task.content_type) and
-                    entry_uav.F_remain > task.cpu_cycles_req and
-                    entry_uav.current_energy > cost_entry):
-
+                        entry_uav.has_content(task.content_type) and
+                        entry_uav.F_remain > task.cpu_cycles_req and
+                        entry_uav.current_energy > cost_entry):
                     num_sharers = max(1, uav_potential_load.get(entry_uav.id, 1))
                     datarate = self.calculate_datarate_user_to_uav(vehicle, entry_uav, num_sharing_users=num_sharers)
-                    upload_duration = math.ceil(task.data_size_bits / (datarate * 1e6 + 1e-9))
-                    compute_duration = math.ceil(task.cpu_cycles_req / entry_uav.F_remain)
+                    upload_duration = math.ceil(task_size_mbit / (datarate + 1e-9))
+                    compute_duration = math.ceil(task.cpu_cycles_req / (entry_uav.F_remain + 1e-9))
                     latency = upload_duration + compute_duration
+                    if latency < best_local_latency and (self.time_step + latency) <= task.latency_constraint:
+                        best_local_latency = latency
+                        profit = self._calculate_earn_task(task, latency, entry_uav)
+                        best_local_option = ('local_uav', entry_uav, entry_uav, latency, profit, [entry_uav.id])
 
-                    if latency < best_latency and (self.time_step + latency) <= task.latency_constraint:
-                        best_latency, best_option = latency, ('local_uav', entry_uav, entry_uav, latency,
-                                                              self._calculate_earn_task(task, latency, entry_uav),
-                                                              [entry_uav.id])
+            if best_local_option:
+                logger.debug(f"Task {task.id}: Found viable local option. Assigning.")
+                self._finalize_task_assignment(task, best_local_option, vehicle, uav_potential_load)
+                continue
 
-            # Multi-hop relay
-            # Find target UAVs that have the required service
-            target_uavs = service_cache_map.get(task.service_type, [])
-            if target_uavs:
+            # --- Step 2: Try Relaying if Local Failed ---
+            logger.debug(f"Task {task.id}: No suitable local UAV found. Evaluating relay options.")
+            best_relay_option = None
+            best_relay_latency = float('inf')
+            target_uavs_with_service = [u for u in self.uavs if u.has_service(task.service_type)]
+
+            if target_uavs_with_service:
                 for entry_uav in idle_uavs_in_range:
-                    # Find a path to a valid target UAV (that also has the content)
-                    hop_path_indices = self._find_multi_hop_path(task, entry_uav, target_uav_candidates=target_uavs)
-
+                    hop_path_indices = self._find_multi_hop_path(task, entry_uav,
+                                                                 target_uav_candidates=target_uavs_with_service)
                     if hop_path_indices:
                         hop_path_uavs = [self.uavs[idx] for idx in hop_path_indices]
                         target_uav = hop_path_uavs[-1]
-
-                        # Check again if target_uav is valid (find_multi_hop_path should ensure this)
-                        if not target_uav.has_content(task.content_type): continue
-
                         num_sharers = max(1, uav_potential_load.get(entry_uav.id, 1))
-                        upload_rate = self.calculate_datarate_user_to_uav(vehicle, entry_uav, num_sharing_users=num_sharers)
-                        upload_duration = math.ceil(task.data_size_bits / (upload_rate * 1e6 + 1e-9))
-                        relay_duration = 0
-                        for i in range(len(hop_path_uavs) - 1):
-                            relay_rate = self.calculate_datarate_uav_to_uav(hop_path_uavs[i], hop_path_uavs[i + 1])
-                            relay_duration += math.ceil(task.data_size_bits / (relay_rate * 1e6 + 1e-9))
-                        compute_duration = math.ceil(task.cpu_cycles_req / target_uav.F_remain)
+                        upload_rate = self.calculate_datarate_user_to_uav(vehicle, entry_uav,
+                                                                          num_sharing_users=num_sharers)
+                        upload_duration = math.ceil(task_size_mbit / (upload_rate + 1e-9))
+                        relay_duration = sum(math.ceil(task_size_mbit / (
+                                self.calculate_datarate_uav_to_uav(hop_path_uavs[i], hop_path_uavs[i + 1]) + 1e-9))
+                                             for i in range(len(hop_path_uavs) - 1))
+                        compute_duration = math.ceil(task.cpu_cycles_req / (target_uav.F_remain + 1e-9))
                         latency = upload_duration + relay_duration + compute_duration
-                        cost_entry, cost_target = self._calculate_task_energy_cost(task, 'relay_uav', entry_uav,
-                                                                                   target_uav, hop_path_indices)
-                        if latency < best_latency and (self.time_step + latency) <= task.latency_constraint:
-                            best_latency, best_option = latency, ('relay_uav', entry_uav, target_uav, latency,
-                                                                  self._calculate_earn_task(task, latency, entry_uav),
-                                                                  [u.id for u in hop_path_uavs])
+                        if latency < best_relay_latency and (self.time_step + latency) <= task.latency_constraint:
+                            best_relay_latency = latency
+                            profit = self._calculate_earn_task(task, latency, entry_uav)
+                            best_relay_option = ('relay_uav', entry_uav, target_uav, latency, profit,
+                                                 [u.id for u in hop_path_uavs])
 
-            # Cloud fallback
+            if best_relay_option:
+                logger.debug(f"Task {task.id}: Found viable relay option. Assigning.")
+                self._finalize_task_assignment(task, best_relay_option, vehicle, uav_potential_load)
+                continue
+
+            # --- Step 3: Use Cloud as a Last Resort ---
+            logger.debug(f"Task {task.id}: No suitable relay path found. Evaluating cloud as last resort.")
+            best_cloud_option = None
+            best_cloud_latency = float('inf')
+
             for entry_uav in idle_uavs_in_range:
                 cost_entry, _ = self._calculate_task_energy_cost(task, 'cloud', entry_uav)
                 if entry_uav.current_energy > cost_entry:
-
-                    # MODIFIED: Pass the pre-calculated user load
                     num_sharers = max(1, uav_potential_load.get(entry_uav.id, 1))
                     rate_user = self.calculate_datarate_user_to_uav(vehicle, entry_uav, num_sharing_users=num_sharers)
-
                     rate_ccc = self.calculate_datarate_uav_to_ccc(entry_uav)
-                    upload_duration = math.ceil(task.data_size_bits / (rate_user * 1e6 + 1e-9))
-                    relay_duration = math.ceil(task.data_size_bits / (rate_ccc * 1e6 + 1e-9))
+                    upload_duration = math.ceil(task_size_mbit / (rate_user + 1e-9))
+                    relay_duration = math.ceil(task_size_mbit / (rate_ccc + 1e-9))
                     latency = upload_duration + relay_duration
-                    if latency < best_latency and (self.time_step + latency) <= task.latency_constraint:
-                        best_latency, best_option = latency, ('cloud', entry_uav, None, latency,
-                                                              self._calculate_earn_task(task, latency))
+                    if latency < best_cloud_latency and (self.time_step + latency) <= task.latency_constraint:
+                        best_cloud_latency = latency
+                        profit = self._calculate_earn_task(task, latency)
+                        best_cloud_option = ('cloud', entry_uav, None, latency, profit, [entry_uav.id])
 
-            if best_option:
-                offload_type, entry_uav, target_uav, latency, profit, hop_path = best_option if len(
-                    best_option) == 6 else best_option + ([],)
-                task.status = 'UPLOADING'
-                task.profit_generated = profit
-                task.entry_uav, task.target_uav = entry_uav, target_uav
-                task.hop_path = hop_path
+            if best_cloud_option:
+                logger.debug(f"Task {task.id}: Assigning to cloud via best entry UAV.")
+                self._finalize_task_assignment(task, best_cloud_option, vehicle, uav_potential_load)
+            else:
+                logger.debug(f"Task {task.id}: No viable offloading option found. Task remains PENDING.")
 
-                # MODIFIED: Final assignment must also use the shared data rate for timing
-                num_sharers = max(1, uav_potential_load.get(entry_uav.id, 1))
-                upload_rate = self.calculate_datarate_user_to_uav(vehicle, entry_uav, num_sharing_users=num_sharers)
+    def _finalize_task_assignment(self, task, best_option, vehicle, uav_potential_load):
+        """Helper method to finalize the assignment and update states."""
+        offload_type, entry_uav, target_uav, latency, profit, hop_path_ids = best_option
 
-                task.upload_complete_time = self.time_step + math.ceil(task.data_size_bits / (upload_rate * 1e6 + 1e-9))
-                if offload_type == 'local_uav':
-                    task.compute_complete_time = task.upload_complete_time + math.ceil(
-                        task.cpu_cycles_req / entry_uav.F_remain)
-                    # MODIFIED: Record hit in the service cache
-                    entry_uav.record_service_cache_hit(task.service_type)
-                elif offload_type == 'relay_uav':
-                    relay_duration = 0
-                    # This part remains unchanged as UAV-UAV links use a different frequency band
-                    for i in range(len(hop_path) - 1):
-                        uav1 = next(u for u in self.uavs if u.id == hop_path[i])
-                        uav2 = next(u for u in self.uavs if u.id == hop_path[i+1])
-                        relay_rate = self.calculate_datarate_uav_to_uav(uav1, uav2)
-                        relay_duration += math.ceil(task.data_size_bits / (relay_rate * 1e6 + 1e-9))
-                    task.relay_complete_time = task.upload_complete_time + relay_duration
-                    task.compute_complete_time = task.relay_complete_time + math.ceil(
-                        task.cpu_cycles_req / target_uav.F_remain)
-                    target_uav.record_service_cache_hit(task.service_type)
-                elif offload_type == 'cloud':
-                    task.compute_complete_time = task.upload_complete_time
-                    if np.random.rand() < CACHE_UPDATE_PROBABILITY:
-                        entry_uav.update_service_cache(task.service_type)
+        # RESTORED THIS IMPORTANT LOG
+        logger.info("Task %s assigned: Type=%s, EntryUAV=%d, TargetUAV=%s, Latency=%.2f, Profit=%.2f",
+                    task.id, offload_type, entry_uav.id, target_uav.id if target_uav else "CCC", latency, profit)
 
-                cost_entry, cost_target = self._calculate_task_energy_cost(task, offload_type, entry_uav, target_uav,
-                                                                           [u.id for u in hop_path] if offload_type == 'relay_uav' else [])
-                entry_uav.consume_energy(cost_entry)
-                if target_uav:
-                    target_uav.consume_energy(cost_target)
-                    target_uav.F_remain -= task.cpu_cycles_req
-                entry_uav.status = 'BUSY'
-                if target_uav and entry_uav.id != target_uav.id:
-                    target_uav.status = 'BUSY'
+        task.status = 'UPLOADING'
+        task.profit_generated = profit
+        task.entry_uav, task.target_uav = entry_uav, target_uav
+        task.hop_path = hop_path_ids
 
+        num_sharers = max(1, uav_potential_load.get(entry_uav.id, 1))
+        upload_rate = self.calculate_datarate_user_to_uav(vehicle, entry_uav, num_sharing_users=num_sharers)
+        task.upload_complete_time = self.time_step + math.ceil(task.data_size_bits / (upload_rate * 1e6 + 1e-9))
+
+        if offload_type == 'local_uav':
+            task.compute_complete_time = task.upload_complete_time + math.ceil(
+                task.cpu_cycles_req / (entry_uav.F_remain + 1e-9))
+            entry_uav.record_service_cache_hit(task.service_type)
+            entry_uav.record_content_cache_hit(task.content_type)
+        elif offload_type == 'relay_uav':
+            relay_duration = 0
+            for i in range(len(hop_path_ids) - 1):
+                uav1 = next(u for u in self.uavs if u.id == hop_path_ids[i])
+                uav2 = next(u for u in self.uavs if u.id == hop_path_ids[i + 1])
+                relay_rate = self.calculate_datarate_uav_to_uav(uav1, uav2)
+                relay_duration += math.ceil(task.data_size_bits / (relay_rate * 1e6 + 1e-9))
+            task.relay_complete_time = task.upload_complete_time + relay_duration
+            task.compute_complete_time = task.relay_complete_time + math.ceil(
+                task.cpu_cycles_req / (target_uav.F_remain + 1e-9))
+            target_uav.record_service_cache_hit(task.service_type)
+            target_uav.record_content_cache_hit(task.content_type)
+        elif offload_type == 'cloud':
+            CLOUD_COMPUTE_TIME = 5  # Added a nominal compute time for realism
+            relay_duration = math.ceil(
+                task.data_size_bits / (self.calculate_datarate_uav_to_ccc(entry_uav) * 1e6 + 1e-9))
+            task.compute_complete_time = task.upload_complete_time + relay_duration + CLOUD_COMPUTE_TIME
+
+        if np.random.rand() < CACHE_UPDATE_PROBABILITY:
+            entry_uav.update_service_cache(task.service_type)
+            entry_uav.update_content_cache(task.content_type)
+
+        cost_entry, cost_target = self._calculate_task_energy_cost(task, offload_type, entry_uav, target_uav,
+                                                                   hop_path_ids if offload_type == 'relay_uav' else [])
+        entry_uav.consume_energy(cost_entry)
+        if target_uav:
+            target_uav.consume_energy(cost_target)
+            target_uav.F_remain -= task.cpu_cycles_req
+
+        entry_uav.status = 'BUSY'
+        if target_uav and entry_uav.id != target_uav.id:
+            target_uav.status = 'BUSY'
 
     def _calculate_path_loss(self, dist, altitude):
         """
@@ -546,3 +652,118 @@ class VECNEnvironment:
         # Weighted eta
         pl_db = free_space_loss + P_LoS * ETA_LOS + (1 - P_LoS) * ETA_NLOS
         return pl_db
+
+    def _assign_new_tasks_simplified(self):
+        """
+        NEW cache-aware task assignment logic.
+        1. Tries to find a local UAV with the right cache.
+        2. If not, tries to find a relay path to a UAV with the right cache.
+        3. If not, offloads to the cloud as a last resort.
+        """
+        pending_tasks = [task for v in self.vehicles for task in v.tasks if task.status == 'PENDING']
+        if not self.uavs or not pending_tasks:
+            return
+
+        for task in pending_tasks:
+            vehicle = next(v for v in self.vehicles if v.id == task.owner_id)
+
+            # Find all IDLE UAVs within the vehicle's communication range
+            idle_uavs_in_range = [
+                u for u in self.uavs if u.status == 'IDLE' and
+                                        self._get_distance_obj(u, vehicle) <= UAV_COMMUNICATION_RANGE
+            ]
+            if not idle_uavs_in_range:
+                continue  # No UAVs available for this task right now
+
+            task.time_initiated = self.time_step
+
+            # --- Priority 1: Find a LOCAL processor ---
+            # Search for a UAV in range that has the right service/content and resources
+            local_processor = None
+            for uav in idle_uavs_in_range:
+                if (uav.has_service(task.service_type) and
+                        uav.has_content(task.content_type) and
+                        uav.F_remain >= task.cpu_cycles_req):
+                    local_processor = uav
+                    break  # Found a suitable local UAV, stop searching
+
+            if local_processor:
+                self._finalize_task_assignment_simplified(task, 'LOCAL_UAV', local_processor, local_processor)
+                continue  # Assignment successful, move to the next task
+
+            # --- Priority 2: Find a RELAY path ---
+            # If no local processor was found, we need an entry point and a separate target
+            entry_uav = min(idle_uavs_in_range, key=lambda u: self._get_distance_obj(u, vehicle))
+
+            # Search ALL UAVs (not just those in range of the vehicle) for a suitable target
+            potential_targets = [
+                uav for uav in self.uavs if
+                uav.status == 'IDLE' and uav.id != entry_uav.id and
+                self._get_distance_obj(uav,
+                                       entry_uav) <= UAV_COMMUNICATION_RANGE and  # Target must be in range of entry UAV
+                uav.has_service(task.service_type) and
+                uav.has_content(task.content_type) and
+                uav.F_remain >= task.cpu_cycles_req
+            ]
+
+            if potential_targets:
+                # Find the closest valid target to the entry UAV
+                target_uav = min(potential_targets, key=lambda u: self._get_distance_obj(u, entry_uav))
+                self._finalize_task_assignment_simplified(task, 'RELAY_UAV', entry_uav, target_uav)
+                continue  # Assignment successful, move to the next task
+
+            # --- Priority 3: Offload to CLOUD as a last resort ---
+            # Use the closest UAV in range as the entry point to the cloud
+            cloud_entry_uav = min(idle_uavs_in_range, key=lambda u: self._get_distance_obj(u, vehicle))
+            self._finalize_task_assignment_simplified(task, 'CLOUD', cloud_entry_uav, None)
+
+    def _finalize_task_assignment_simplified(self, task, destination, entry_uav, target_uav):
+        """
+        NEW helper to finalize assignment for the 3 simplified UAV-based scenarios.
+        """
+        task_size_mbit = task.data_size_bits / 1e6
+        vehicle = next(v for v in self.vehicles if v.id == task.owner_id)
+
+        # Common first step: Upload from vehicle to entry UAV
+        datarate_to_entry = self.calculate_datarate_user_to_uav(vehicle, entry_uav)
+        raw_upload_seconds = task_size_mbit / (datarate_to_entry + 1e-9)
+        upload_duration = math.ceil(raw_upload_seconds * LATENCY_SCALING_FACTOR)
+        task.upload_complete_time = self.time_step + upload_duration
+
+        task.status = 'UPLOADING'
+        task.entry_uav = entry_uav
+        task.target_uav = target_uav
+        entry_uav.status = 'BUSY'
+
+        if destination == 'LOCAL_UAV':
+            raw_compute_seconds = task.cpu_cycles_req / (target_uav.F_remain + 1e-9)
+            compute_duration = math.ceil(raw_compute_seconds * LATENCY_SCALING_FACTOR)
+            task.compute_complete_time = task.upload_complete_time + compute_duration
+            target_uav.F_remain -= task.cpu_cycles_req
+            logger.info(
+                f"Task {task.id} assigned to LOCAL UAV {entry_uav.id}. Latency: {upload_duration + compute_duration} steps.")
+
+        elif destination == 'RELAY_UAV':
+            target_uav.status = 'BUSY'
+            datarate_relay = self.calculate_datarate_uav_to_uav(entry_uav, target_uav)
+            raw_relay_seconds = task_size_mbit / (datarate_relay + 1e-9)
+            relay_duration = math.ceil(raw_relay_seconds * LATENCY_SCALING_FACTOR)
+            raw_compute_seconds = task.cpu_cycles_req / (target_uav.F_remain + 1e-9)
+            compute_duration = math.ceil(raw_compute_seconds * LATENCY_SCALING_FACTOR)
+            task.relay_complete_time = task.upload_complete_time + relay_duration
+            task.compute_complete_time = task.relay_complete_time + compute_duration
+            target_uav.F_remain -= task.cpu_cycles_req
+            logger.info(
+                f"Task {task.id} assigned to RELAY UAV {target_uav.id} via {entry_uav.id}. Latency: {upload_duration + relay_duration + compute_duration} steps.")
+
+        elif destination == 'CLOUD':
+            datarate_to_cloud = self.calculate_datarate_uav_to_ccc(entry_uav)
+            raw_relay_seconds = task_size_mbit / (datarate_to_cloud + 1e-9)
+            relay_duration = math.ceil(raw_relay_seconds * LATENCY_SCALING_FACTOR)
+            task.compute_complete_time = task.relay_complete_time + CLOUD_COMPUTE_LATENCY
+            logger.info(
+                f"Task {task.id} assigned to CLOUD via UAV {entry_uav.id}. Latency: {upload_duration + relay_duration + CLOUD_COMPUTE_LATENCY} steps.")
+
+        # Simplified energy cost - for now, just apply to the entry UAV
+        cost_entry, _ = self._calculate_task_energy_cost(task, 'local_uav', entry_uav)  # Approximation is fine
+        entry_uav.consume_energy(cost_entry)

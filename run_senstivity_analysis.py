@@ -24,9 +24,9 @@ from maddpg_agent import MADDPGController
 # Define the parameters we want to test and the range of values for each.
 # Format: { 'parameter_name_in_config': np.linspace(start, end, num_points) }
 PARAMETERS_TO_ANALYZE = {
-    'BETA_MAINTENANCE': np.linspace(500, 2500, 9),  # How does UAV fixed cost affect deployment?
-    'DELTA_LATENCY': np.linspace(1.0, 10.0, 9),  # How does the reward for speed affect profit?
-    'ENERGY_REWARD_PENALTY': np.linspace(0.0, 0.0005, 9)  # How does energy cost affect behavior?
+    'BETA_MAINTENANCE': np.linspace(10, 25000, 50),  # How does UAV fixed cost affect deployment?
+    'DELTA_LATENCY': np.linspace(1.0, 100.0, 50),  # How does the reward for speed affect profit?
+    'ENERGY_REWARD_PENALTY': np.linspace(0.0, 0.001, 50)  # How does energy cost affect behavior?
 }
 
 # --- Evaluation Settings ---

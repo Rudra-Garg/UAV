@@ -1,121 +1,221 @@
 # config.py
 """
-Centralized configuration file for simulation parameters.
-CORRECTED for Phase 4: The MADDPG_STATE_DIM is now correctly set to 7 to
-account for the addition of the UAV status feature.
+=========================================================================================
+CENTRALIZED CONFIGURATION FILE
+This file contains all simulation and model parameters for the HRL-based UAV deployment project.
+Organized into logical sections for easier management and tuning.
+=========================================================================================
 """
 
 import torch
 
-# --- Device Configuration ---
+# ========================================================================================
+# A. CORE SIMULATION SETTINGS
+# High-level controls for the simulation environment and training process.
+# ========================================================================================
+
+# --- Hardware Configuration ---
+# Automatically uses NVIDIA CUDA if available, otherwise defaults to CPU.
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# --- Simulation Area and Time ---
+# --- Simulation Environment ---
+# Defines the physical boundaries of the simulation area in meters.
 AREA_WIDTH = 10000
 AREA_HEIGHT = 10000
 
-# --- UAV Parameters (From Paper Section V & Table II) ---
-UAV_ALTITUDE = 50
-UAV_COMMUNICATION_RANGE = 1000
-MIN_UAV_DISTANCE = 500
-UAV_MAX_SPEED = 50
-UAV_COMPUTATIONAL_RESOURCES = 2.25e6
-UAV_CACHE_SIZE = 3
-
-# --- Vehicle Parameters (From Paper Section V-A) ---
-NUM_VEHICLES = 100
-VEHICLE_MIN_SPEED = 1.5
-VEHICLE_MAX_SPEED = 3.0
-TASKS_PER_VEHICLE = 6
-USE_DYNAMIC_DEMAND = True       # Master switch to enable/disable this feature
-CONGESTION_NUM_ZONES = 3        # Number of "congestion" clusters to create
-TASKS_PER_VEHICLE_CONGESTED = 8 # Number of tasks for vehicles inside a congestion zone
-
-# --- Task Parameters (From Paper Section V-A) ---
-TASK_DATA_SIZE_RANGE = (50, 100)  # Mbit
-NUM_SERVICE_TYPES = 100
-TASK_CPU_CYCLES_PER_BIT = 0.5
-LATENCY_CONSTRAINT_RANGE = (40.0, 60.0)
-
-# --- Economic & Reward Parameters ---
-BETA_COMPUTATION = 1e-12
-BETA_MAINTENANCE = 100.0
-DELTA_LATENCY = 10.0
-DELTA_SIZE = 2.0
-DELTA_COMPUTATION = 0.5
-REWARD_SCALING_FACTOR = 1.0
-
-# --- Energy Parameters (from Phase 2) ---
-UAV_ENERGY_CAPACITY_JOULES = (800000.0, 1000000.0)
-ENERGY_HOVER_WATT = 200.0
-ENERGY_COMPUTATION_JOULE_PER_GCYCLE = 10e-9
-ENERGY_COMM_JOULE_PER_MBIT = 0.5
-ENERGY_REWARD_PENALTY = 0.0001
-
-# --- Dynamic Caching Parameters (from Phase 3) ---
-CACHE_UPDATE_PROBABILITY = 0.2  # 20% chance
-
-# --- Communication & Power (From Paper Table II) ---
-BANDWIDTH_UAV_USER = 2e6
-BANDWIDTH_UAV_UAV = 3e6
-BANDWIDTH_UAV_CCC = 20e6
-NOISE_POWER_SPECTRAL_DENSITY = -96
-CARRIER_FREQUENCY = 2e9
-POWER_UAV_USER = 0.5
-POWER_UAV_UAV = 0.7
-POWER_CCC = 5
-ETA_LOS = 1.8
-ETA_NLOS = 30
-USE_ENERGY_PENALTY = False  # If True, subtracts energy cost from profit in reward calculation.
-USE_UAV_STATUS = False      # If True, includes a UAV's IDLE/BUSY status in its MADDPG state.
-
-
-# --- Path Loss Parameters (Unchanged) ---
-C = 3e8
-LOS_X0 = 11.9
-LOS_Y0 = 0.13
-
-# --- HRL Training Parameters ---
+# --- Training Duration ---
+# Defines the total number of episodes for the training loop and steps within each episode.
 TOTAL_EPISODES = 1000
 INNER_STEPS = 100
 
-# --- DDQN (Outer Layer) Parameters ---
-DDQN_ACTION_SPACE = 15
-DDQN_STATE_DIM = 6
-DDQN_LEARNING_RATE = 0.0005
-DDQN_BUFFER_SIZE = 50000
-DDQN_BATCH_SIZE = 64
-DDQN_GAMMA = 0.95
-DDQN_EPSILON_START = 0.1
-DDQN_EPSILON_END = 0.01
-DDQN_EPSILON_DECAY = 0.995
-DDQN_TAU = 0.005
+# ========================================================================================
+# B. ENTITY & DEMAND PARAMETERS
+# Defines the properties of physical entities (UAVs, Vehicles) and the tasks they generate.
+# ========================================================================================
 
-# --- MADDPG (Inner Layer) Parameters ---
-# Phase 4 CORRECTION: State dimension increased by 1 to include UAV status
-MADDPG_STATE_DIM = 7 if USE_UAV_STATUS else 6
-MADDPG_ACTION_DIM = 2
-MADDPG_LEARNING_RATE_ACTOR = 0.0005
-MADDPG_LEARNING_RATE_CRITIC = 0.0005
-MADDPG_BUFFER_SIZE = 100000
-MADDPG_BATCH_SIZE = 128
-MADDPG_GAMMA = 0.95
-MADDPG_TAU = 0.01
+# --- UAV Fleet Parameters ---
+# Physical and computational characteristics of the Uncrewed Aerial Vehicles.
+UAV_ALTITUDE = 50  # Fixed operational altitude for all UAVs (meters).
+UAV_COMMUNICATION_RANGE = 1000  # Maximum communication radius for a UAV (meters).
+MIN_UAV_DISTANCE = 500  # Minimum safe distance between any two UAVs to avoid collision (meters).
+UAV_MAX_SPEED = 50  # Maximum horizontal speed of a UAV (meters per step).
+UAV_COMPUTATIONAL_RESOURCES = 2.25e9  # Total computational capacity of a single UAV (cycles per second).
+UAV_ENERGY_CAPACITY_JOULES = (800000.0, 1000000.0)  # Range for random initialization of a UAV's max battery capacity.
 
+# --- Vehicle Fleet Parameters ---
+# Physical characteristics of the ground vehicles.
+NUM_VEHICLES = 100  # The default number of vehicles in the simulation area.
+VEHICLE_MIN_SPEED = 1.5  # Minimum speed for a vehicle (meters per step).
+VEHICLE_MAX_SPEED = 3.0  # Maximum speed for a vehicle (meters per step).
 
-MAX_HOPS = 2
-DYNAMIC_BANDWIDTH = True            # Enable/disable the TDMA bandwidth sharing model
+# --- Task & Demand Generation ---
+# Controls how computational tasks are generated by vehicles.
+TASKS_PER_VEHICLE = 6  # Number of tasks generated by a vehicle in a non-congested zone.
+USE_DYNAMIC_DEMAND = True  # If True, some vehicles will be grouped into "congestion zones".
+TASKS_PER_VEHICLE_CONGESTED = 8  # Number of tasks for vehicles inside a congestion zone.
+TASK_DATA_SIZE_RANGE = (50, 100)  # Range for the size of task data (in Mbits).
+TASK_CPU_CYCLES_PER_BIT = 0.5  # Computational requirement per bit of task data.
+LATENCY_CONSTRAINT_RANGE = (40.0, 60.0)  # Range for the maximum tolerable latency for a task (in simulation steps).
+
+# ========================================================================================
+# C. TRAFFIC SCENARIO GENERATION
+# Controls the creation of different vehicle distribution patterns for each episode.
+# ========================================================================================
+
+# This dictionary defines the types of traffic patterns that can be generated.
+TRAFFIC_SCENARIOS = {
+    # The names of the scenarios to choose from.
+    'SCENARIO_NAMES': ['UNIFORM', 'SINGLE_CONGESTION', 'MULTI_CONGESTION'],
+
+    # The probability of picking each scenario. Must sum to 1.0.
+    'SCENARIO_WEIGHTS': [0.2, 0.4, 0.4],  # e.g., 20% uniform, 40% single, 40% multi.
+
+    'SCENARIOS': {
+        'UNIFORM': {
+            'num_hotspots': 0,
+            'hotspot_radius': 0,
+            'hotspot_ratio': 0.0  # All vehicles are placed randomly.
+        },
+        'SINGLE_CONGESTION': {
+            'num_hotspots': 1,
+            'hotspot_radius': 2000,  # A larger radius for a single big traffic jam.
+            'hotspot_ratio': 0.7  # 70% of vehicles are clustered in this hotspot.
+        },
+        'MULTI_CONGESTION': {
+            'num_hotspots': 3,  # This matches the original setup.
+            'hotspot_radius': 1500,
+            'hotspot_ratio': 0.8  # 70% of vehicles are spread across these hotspots.
+        }
+    }
+}
+# NOTE: The 'CONGESTION_NUM_ZONES' variable is now deprecated and controlled by the TRAFFIC_SCENARIOS dictionary.
+CONGESTION_NUM_ZONES = 3
+
+# ========================================================================================
+# D. COMMUNICATION & CACHING MODELS
+# Parameters for wireless communication, path loss, and on-board UAV caching.
+# ========================================================================================
+
+# --- Communication Model ---
+# Bandwidth, power, and interference settings for different wireless links.
+DYNAMIC_BANDWIDTH = True  # If True, models TDMA bandwidth sharing among users connected to the same UAV.
 TDMA_SLOTS_PER_STEP = 10
+MAX_HOPS = 2  # Maximum number of UAV-to-UAV relays allowed for a single task.
+BANDWIDTH_UAV_USER = 2e6  # Bandwidth for the Vehicle-to-UAV link (Hz).
+BANDWIDTH_UAV_UAV = 3e6  # Bandwidth for the UAV-to-UAV link (Hz).
+BANDWIDTH_UAV_CCC = 20e6  # Bandwidth for the UAV-to-Cloud link (Hz).
+NOISE_POWER_SPECTRAL_DENSITY = -96  # Noise power (dBm/Hz).
+CARRIER_FREQUENCY = 2e9  # Carrier frequency for all links (Hz).
+POWER_UAV_USER = 0.5  # Transmission power for Vehicle-to-UAV link (Watts).
+POWER_UAV_UAV = 0.7  # Transmission power for UAV-to-UAV link (Watts).
+POWER_CCC = 5  # Transmission power for the Cloud Computing Center (Watts).
 
-# --- VISUALIZATION & EVALUATION ---
-VISUALIZATION = False
-MODEL_SAVE_PATH = "models/"
-EVAL_EPISODES = 10
-EVAL_SCENARIO_VEHICLES = range(50, 121, 10)
-SCREEN_WIDTH = 1500
-SCREEN_HEIGHT = 800
-# --- Hybrid Caching Parameters---
-SERVICE_CACHE_SIZE = 2             # Max number of services a UAV can cache
-CONTENT_CACHE_SIZE = 1             # Max number of content items a UAV can cache
-NUM_CONTENT_TYPES = 50             # Number of distinct content types in the simulation
-POPULARITY_ZIPF_ALPHA = 1.2        # Alpha parameter for Zipf distribution for popularity
+# --- Path Loss Model ---
+# Constants for calculating signal strength attenuation over distance.
+ETA_LOS = 1.8  # Path loss exponent for Line-of-Sight (LoS) links.
+ETA_NLOS = 30  # Path loss exponent for Non-Line-of-Sight (NLoS) links.
+C = 3e8  # Speed of light (m/s).
+LOS_X0 = 11.9  # Environmental constants for LoS probability calculation.
+LOS_Y0 = 0.13
+
+# --- Caching Model ---
+# Defines the types and sizes of caches on the UAVs.
+NUM_SERVICE_TYPES = 20  # Total number of unique service types in the simulation.
+NUM_CONTENT_TYPES = 50  # Total number of unique content types in the simulation.
+SERVICE_CACHE_SIZE = 10  # Max number of unique services a UAV can cache.
+CONTENT_CACHE_SIZE = 20  # Max number of unique content items a UAV can cache.
+POPULARITY_ZIPF_ALPHA = 1.2  # Parameter for Zipf distribution to model item popularity.
+CACHE_UPDATE_PROBABILITY = 0.2  # Probability of updating the cache after a service/content miss.
+
+# ========================================================================================
+# E. ECONOMIC, REWARD, & ENERGY MODELS
+# Parameters defining the costs, rewards, and energy consumption rules of the simulation.
+# ========================================================================================
+
+# --- Economic & Reward Model ---
+# Weights for calculating system costs and the profit generated from completing tasks.
+BETA_MAINTENANCE = 10.0  # Cost factor for UAV operational maintenance.
+BETA_COMPUTATION = 1e-7  # Cost factor related to a UAV's computational resources.
+DELTA_LATENCY = 5.0  # Reward factor for low-latency task completion.
+DELTA_SIZE = 2.0  # Reward factor for processing large data tasks.
+DELTA_COMPUTATION = 0.5  # Reward factor for completing computationally intensive tasks.
+REWARD_SCALING_FACTOR = 1.0  # A global multiplier for the final reward signal.
+
+# --- Energy Consumption Model ---
+# Defines how energy is consumed by UAVs for various actions.
+USE_ENERGY_PENALTY = True  # If True, subtracts energy cost from profit in the reward calculation.
+ENERGY_REWARD_PENALTY = 0.0001  # Weight of the energy penalty in the reward function.
+ENERGY_HOVER_WATT = 200.0  # Power consumed by a UAV while hovering (Watts).
+ENERGY_COMPUTATION_JOULE_PER_GCYCLE = 10e-9  # Energy consumed per Giga-cycle of computation (Joules).
+ENERGY_COMM_JOULE_PER_MBIT = 0.5  # Energy consumed per Mbit of data transmission (Joules).
+
+# ========================================================================================
+# F. REINFORCEMENT LEARNING PARAMETERS
+# Hyperparameters for the Hierarchical Reinforcement Learning agents (DDQN and MADDPG).
+# ========================================================================================
+
+# --- Outer Loop Agent (DDQN) ---
+# DDQN agent is responsible for the high-level decision of *how many* UAVs to deploy.
+DDQN_ACTION_SPACE = 50  # The number of possible actions (e.g., 15 means it can choose to deploy 1 to 15 UAVs).
+DDQN_STATE_DIM = 6  # The dimensionality of the global state vector fed to the DDQN.
+DDQN_LEARNING_RATE = 0.0005  # Learning rate for the Adam optimizer.
+DDQN_BUFFER_SIZE = 50000  # Size of the replay buffer.
+DDQN_BATCH_SIZE = 64  # Minibatch size for sampling from the replay buffer.
+DDQN_GAMMA = 0.95  # Discount factor for future rewards.
+DDQN_EPSILON_START = 0.9  # Initial value for epsilon in the epsilon-greedy policy (exploration rate).
+DDQN_EPSILON_END = 0.01  # Minimum value for epsilon.
+DDQN_EPSILON_DECAY = 0.995  # Multiplicative factor for decaying epsilon over time.
+DDQN_TAU = 0.005  # Rate for the soft update of the target network.
+
+# --- Inner Loop Agents (MADDPG) ---
+# MADDPG agents are responsible for the low-level tactical decision of *where* each UAV should move.
+USE_UAV_STATUS = True  # If True, includes a UAV's IDLE/BUSY status in its MADDPG state vector.
+MADDPG_STATE_DIM = 7 if USE_UAV_STATUS else 6  # Dimensionality of the local state vector for each MADDPG agent.
+MADDPG_ACTION_DIM = 2  # Dimensionality of the action vector (e.g., [x_velocity, y_velocity]).
+MADDPG_LEARNING_RATE_ACTOR = 0.0005  # Learning rate for the actor networks.
+MADDPG_LEARNING_RATE_CRITIC = 0.0005  # Learning rate for the critic network.
+MADDPG_BUFFER_SIZE = 100000  # Size of the shared replay buffer for all MADDPG agents.
+MADDPG_BATCH_SIZE = 128  # Minibatch size for MADDPG learning.
+MADDPG_GAMMA = 0.95  # Discount factor for future rewards.
+MADDPG_TAU = 0.01  # Rate for the soft update of the target networks.
+
+# ========================================================================================
+# G. TASK OFFLOADING LOGIC
+# Switches and parameters to control how tasks are assigned and processed.
+# ========================================================================================
+
+# --- Offloading Logic Selector ---
+# Set to True to use the simplified, cache-aware, prioritized offloading.
+USE_SIMPLIFIED_OFFLOADING = True
+
+# --- Simplified Offloading Probabilities (DEPRECATED by prioritized logic) ---
+# These probabilities are no longer used if the environment uses the improved waterfall logic.
+TASK_OFFLOAD_PROB_LOCAL_UAV = 0.50
+TASK_OFFLOAD_PROB_RELAY_UAV = 0.30
+TASK_OFFLOAD_PROB_CLOUD = 0.20
+
+# --- Simplified Offloading Latency Parameters ---
+# These are used to model fixed latencies for certain operations.
+DEVICE_COMPUTE_LATENCY = 10  # Fixed time for a vehicle to process a task locally (if that were an option).
+CLOUD_COMPUTE_LATENCY = 5  # Fixed time for the cloud to process a task.
+LATENCY_SCALING_FACTOR = 0.000001  # A scaling factor to convert calculated seconds into simulation steps.
+
+# ========================================================================================
+# H. EVALUATION & VISUALIZATION
+# Controls for saving models, running evaluations, and rendering the simulation.
+# ========================================================================================
+
+# --- Model & Evaluation Settings ---
+MODEL_SAVE_PATH = "models/"  # Directory to save trained model weights.
+EVAL_EPISODES = 50  # Number of episodes to run for each scenario during evaluation.
+EVAL_SCENARIO_VEHICLES = range(50, 121, 10)  # A range of vehicle counts to test during evaluation.
+
+# --- Visualization Settings ---
+VISUALIZATION = True  # Master switch to enable/disable Pygame visualization.
+VISUALIZER_STAYS_OPEN = True  # If False, visualizer closes after taking snapshots. If True, it stays open.
+SCREEN_WIDTH = 1500  # Width of the visualization window in pixels.
+SCREEN_HEIGHT = 800  # Height of the visualization window in pixels.
+SAVE_VISUALIZATION_IMAGES = True  # If True, saves snapshots of the simulation at specified intervals.
+IMAGE_SAVE_PATH = "visualization_snapshots/"  # Folder to save the snapshot images.
+EPISODES_TO_SNAPSHOT = [1, 250, 500, 750, 1000]  # Save an image on these specific episodes.
+STEPS_TO_SNAPSHOT = [1, 25, 50, 75, 100]  # Save an image at these specific steps within the target episodes.

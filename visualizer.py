@@ -3,7 +3,7 @@
 Handles the Pygame-based visualization of the simulation environment.
 """
 import sys
-
+import os
 import pygame
 
 from config import *
@@ -78,6 +78,25 @@ class Visualizer:
         self._draw_text(f"Step: {step}/{INNER_STEPS}", 10, 30)
         self._draw_text(f"UAVs Deployed: {len(uavs)}", 10, 50)
 
+        # Check if the current episode AND step are in our target lists
+        if (SAVE_VISUALIZATION_IMAGES and
+            episode in EPISODES_TO_SNAPSHOT and
+            step in STEPS_TO_SNAPSHOT):
+
+            # Ensure the save directory exists
+            os.makedirs(IMAGE_SAVE_PATH, exist_ok=True)
+
+            # Create a unique filename
+            filename = f"episode_{episode}_step_{step}.png"
+            full_path = os.path.join(IMAGE_SAVE_PATH, filename)
+
+            # Save the current screen surface
+            pygame.image.save(self.screen, full_path)
+
         # --- Update Display ---
         pygame.display.flip()
-        self.clock.tick(30)  # Limit to 30 FPS to make it watchable
+        self.clock.tick(30)
+
+    def close(self):
+        """Closes the Pygame window."""
+        pygame.quit()

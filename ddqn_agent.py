@@ -1,12 +1,12 @@
 # ddqn_agent.py
 """
 Implements the DDQN agent for the outer loop (UAV number selection).
-
 This agent learns a policy to decide how many UAVs should be deployed
 based on a high-level, global state of the environment. It includes
 methods for action selection, learning from a replay buffer, and
 saving/loading its learned network weights.
 """
+import logging
 import os
 import random
 
@@ -17,6 +17,9 @@ import torch.optim as optim
 from config import *
 from replay_buffer import ReplayBuffer
 from rl_networks import DDQN_Network
+
+# Get a logger for this module
+logger = logging.getLogger(__name__)
 
 
 class DDQNAgent:
@@ -40,7 +43,6 @@ class DDQNAgent:
         """
         Selects an action using an epsilon-greedy policy for training, or a purely greedy
         policy for evaluation.
-
         Args:
             state (np.array): The current global state.
             evaluation (bool): If True, disables exploration (epsilon=0).
@@ -53,22 +55,31 @@ class DDQNAgent:
             with torch.no_grad():
                 state = torch.FloatTensor(state).unsqueeze(0).to(DEVICE)
                 q_values = self.policy_net(state)
-                return np.argmax(q_values.cpu().data.numpy())
+                action = np.argmax(q_values.cpu().data.numpy())
+                logger.debug("Action selection (evaluation): Chose action %d", action)
+                return action
 
         # During training, use the epsilon-greedy strategy.
         if random.random() < self.epsilon:
-            return random.randrange(self.action_space)  # Explore: select a random action
+            action = random.randrange(self.action_space)  # Explore: select a random action
+            logger.debug("Action selection (exploration): Chose random action %d with epsilon %.4f", action,
+                         self.epsilon)
+            return action
 
         # Exploit: select the best action from the policy network.
         with torch.no_grad():
             state = torch.FloatTensor(state).unsqueeze(0).to(DEVICE)
             q_values = self.policy_net(state)
-            return np.argmax(q_values.cpu().data.numpy())
+            action = np.argmax(q_values.cpu().data.numpy())
+            logger.debug("Action selection (exploitation): Chose action %d with epsilon %.4f", action, self.epsilon)
+            return action
 
     def learn(self):
         """Trains the agent by sampling a batch of experiences from the replay buffer."""
         # Do not learn until the memory has enough experiences.
         if len(self.memory) < DDQN_BATCH_SIZE:
+            logger.debug("Skipping learning step. Replay buffer size (%d) is less than batch size (%d).",
+                         len(self.memory), DDQN_BATCH_SIZE)
             return
 
         states, actions, rewards, next_states, dones = self.memory.sample()
@@ -89,6 +100,7 @@ class DDQNAgent:
 
         # Calculate the Mean Squared Error loss between current and expected Q-values.
         loss = F.mse_loss(current_q, expected_q)
+        logger.debug("Learning step complete. DDQN loss: %.4f", loss.item())
 
         # Perform backpropagation.
         self.optimizer.zero_grad()
@@ -107,20 +119,24 @@ class DDQNAgent:
         target_net_weights = self.target_net.state_dict()
         policy_net_weights = self.policy_net.state_dict()
         for key in policy_net_weights:
-            target_net_weights[key] = policy_net_weights[key] * (1 - DDQN_TAU) + policy_net_weights[key] * DDQN_TAU
+            target_net_weights[key] = policy_net_weights[key] * DDQN_TAU + target_net_weights[key] * (1 - DDQN_TAU)
         self.target_net.load_state_dict(target_net_weights)
 
     def save(self, directory):
         """Saves the policy network's learned weights to a file."""
         if not os.path.exists(directory):
             os.makedirs(directory)
-        torch.save(self.policy_net.state_dict(), os.path.join(directory, 'ddqn_policy_net.pth'))
+        save_path = os.path.join(directory, 'ddqn_policy_net.pth')
+        torch.save(self.policy_net.state_dict(), save_path)
+        logger.info("DDQN policy network saved to %s", save_path)
 
     def load(self, directory):
         """Loads learned weights from a file into both policy and target networks."""
-        self.policy_net.load_state_dict(torch.load(os.path.join(directory, 'ddqn_policy_net.pth')))
+        load_path = os.path.join(directory, 'ddqn_policy_net.pth')
+        self.policy_net.load_state_dict(torch.load(load_path))
         # Copy the loaded weights to the target network as well.
         self.target_net.load_state_dict(self.policy_net.state_dict())
         # Set networks to evaluation mode.
         self.policy_net.eval()
         self.target_net.eval()
+        logger.info("DDQN policy network loaded from %s", load_path)

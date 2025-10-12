@@ -8,6 +8,7 @@ This file contains two main classes:
   Critic network for training them. It coordinates action selection,
   learning, and model saving/loading for the entire team of UAVs.
 """
+import logging
 import os
 
 import numpy as np
@@ -18,9 +19,13 @@ from config import *
 from replay_buffer import ReplayBuffer
 from rl_networks import Actor, Critic
 
+# Get a logger for this module
+logger = logging.getLogger(__name__)
+
 
 class DDPGAgent:
     """A single agent in the MADDPG setup."""
+
     def __init__(self, state_dim, action_dim, agent_id):
         self.id = agent_id
         self.actor = Actor(state_dim, action_dim).to(DEVICE)
@@ -41,12 +46,15 @@ class DDPGAgent:
         for target_param, param in zip(self.target_actor.parameters(), self.actor.parameters()):
             target_param.data.copy_(MADDPG_TAU * param.data + (1.0 - MADDPG_TAU) * target_param.data)
 
+
 class MADDPGController:
     """Manages all DDPG agents and the centralized critic."""
+
     def __init__(self, num_agents, state_dim, action_dim):
         self.num_agents = num_agents
         self.state_dim = state_dim
         self.action_dim = action_dim
+        logger.debug("MADDPGController initialized for %d agents.", self.num_agents)
 
         self.agents = [DDPGAgent(state_dim, action_dim, i) for i in range(num_agents)]
 
@@ -134,8 +142,11 @@ class MADDPGController:
         actor_loss.backward()
         for agent in self.agents: agent.optimizer_actor.step()
 
+        logger.debug("MADDPG learn step: Critic Loss=%.4f, Actor Loss=%.4f", critic_loss.item(), actor_loss.item())
+
     def update_targets(self):
         """Soft update all target networks (actors and critic)."""
+        logger.debug("Performing soft update on MADDPG target networks.")
         for agent in self.agents:
             agent.update_target_actor()
 
@@ -149,6 +160,7 @@ class MADDPGController:
         for i, agent in enumerate(self.agents):
             torch.save(agent.actor.state_dict(), os.path.join(directory, f'maddpg_actor_{i}.pth'))
         torch.save(self.critic.state_dict(), os.path.join(directory, 'maddpg_critic.pth'))
+        logger.info("MADDPG models saved to directory: %s", directory)
 
     def load(self, directory):
         """Loads the actor and critic networks from files."""
@@ -161,3 +173,4 @@ class MADDPGController:
         self.target_critic.load_state_dict(self.critic.state_dict())  # Copy to target net
         self.critic.eval()
         self.target_critic.eval()
+        logger.info("MADDPG models loaded from directory: %s", directory)

@@ -128,7 +128,7 @@ def main():
     print("Running evaluation scenarios...")
     for num_vehicles in tqdm(vehicle_scenarios, desc="Vehicle Scenarios"):
         for agent_name, agent in agents_to_evaluate.items():
-
+            np.random.seed(num_vehicles)
             # Store list of metric dicts for each episode
             episode_results = []
             for _ in range(EVAL_EPISODES):
@@ -152,7 +152,7 @@ def main():
         scenarios=vehicle_scenarios,
         ylabel='Average System Profit',
         title='Comparison of System Profit vs. Number of Users (Fig. 5)',
-        filename='evaluation_profit_results.png'
+        filename='Evaluations/m1/evaluation_profit_results.png'
     )
 
     plot_comparison(
@@ -161,7 +161,7 @@ def main():
         scenarios=vehicle_scenarios,
         ylabel='Average Number of Processed Tasks',
         title='Comparison of Processed Tasks vs. Number of Users (Fig. 6)',
-        filename='evaluation_tasks_results.png'
+        filename='Evaluations/m1/evaluation_tasks_results.png'
     )
 
     plot_comparison(
@@ -170,7 +170,7 @@ def main():
         scenarios=vehicle_scenarios,
         ylabel='Average Task Latency (steps)',
         title='Comparison of Task Latency vs. Number of Users (Fig. 7)',
-        filename='evaluation_latency_results.png'
+        filename='Evaluations/m1/evaluation_latency_results.png'
     )
 
 
