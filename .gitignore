@@ -1,4 +1,6 @@
 .idea
+old_models
+repo_contents.txt
 osm_data
 sumo_scenario
 visualization_snapshots
