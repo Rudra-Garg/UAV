@@ -17,7 +17,7 @@ from environment import VECNEnvironment
 from maddpg_agent import MADDPGController
 
 if VISUALIZATION:
-    from visualizer import Visualizer
+    pass
 import logging
 
 
@@ -76,35 +76,15 @@ def run_training():
     logger.info("--- Initializing HRL Training on device: %s ---", DEVICE)
 
     writer = SummaryWriter(f"runs/muceds_experiment_{timestamp}")
-    env = VECNEnvironment()
+    env = VECNEnvironment(visualize=VISUALIZATION)
     ddqn_agent = DDQNAgent(state_dim=DDQN_STATE_DIM, action_space=DDQN_ACTION_SPACE)
 
     scores_window = deque(maxlen=100)
     start_time = time.time()
     maddpg_controller = None  # Initialize to handle case where first episode has 0 UAVs
 
-    visualizer = None
-    # --- NEW: Initialize visualizer at the start if it's meant to stay open ---
-    if VISUALIZATION and VISUALIZER_STAYS_OPEN:
-        print("\nInitializing persistent visualization...")
-        visualizer = Visualizer(env.width, env.height)
-
     for episode in range(TOTAL_EPISODES):
         current_episode_num = episode + 1
-        is_snapshot_episode = current_episode_num in EPISODES_TO_SNAPSHOT
-
-        # --- REVISED Visualization Lifecycle Management ---
-        # If the visualizer is NOT persistent, manage it on a per-episode basis.
-        if VISUALIZATION and not VISUALIZER_STAYS_OPEN:
-            # Create it if it's a snapshot episode and it doesn't exist
-            if is_snapshot_episode and visualizer is None:
-                print(f"\nInitializing visualization for Episode {current_episode_num}...")
-                visualizer = Visualizer(env.width, env.height)
-            # Close it if it exists and we've moved past the snapshot episode
-            elif visualizer is not None and not is_snapshot_episode:
-                print(f"\nClosing visualization after Episode {current_episode_num - 1}...")
-                visualizer.close()
-                visualizer = None
 
         logger.info("========== Starting Episode %d ==========", episode + 1)
         outer_state = env.get_ddqn_state()
@@ -117,13 +97,11 @@ def run_training():
             maddpg_controller = MADDPGController(num_agents=num_uavs, state_dim=MADDPG_STATE_DIM,
                                                  action_dim=MADDPG_ACTION_DIM)
             logger.info("Initialized MADDPGController for %d agents.", num_uavs)
-            inner_states = env.reset(num_uavs=num_uavs)
+            inner_states = env.reset(num_uavs=num_uavs, num_vehicles=NUM_VEHICLES)
 
             logger.info("--- Starting Inner Loop (MADDPG) for %d steps ---", INNER_STEPS)
             for t in range(INNER_STEPS):
-                # If a visualizer object exists (for either mode), draw the environment.
-                if visualizer is not None:
-                    visualizer.draw(env.uavs, env.vehicles, current_episode_num, t + 1)
+                current_step_num = t + 1
 
                 actions = maddpg_controller.select_actions(inner_states)
                 next_inner_states, rewards, done = env.step(actions)
@@ -140,6 +118,10 @@ def run_training():
                 if done:
                     break
             logger.info("--- Inner Loop (MADDPG) Finished ---")
+        else:  # Handle case where 0 UAVs are selected
+            # We still need to run an empty environment to get the next state
+            env.reset(num_uavs=0)
+            # The loop will be skipped, and we'll just get the final state.
 
         next_outer_state = env.get_ddqn_state()
         outer_reward = next_outer_state[3]
@@ -172,10 +154,6 @@ def run_training():
                 f'\rEpisode {episode + 1}/{TOTAL_EPISODES}\tAvg Score: {avg_score:.2f}\tUAVs: {num_uavs}\tETA: {eta_formatted}')
 
         logger.info("========== Finished Episode %d ==========\n", episode + 1)
-
-    # Final cleanup after the training loop finishes
-    if visualizer is not None:
-        visualizer.close()
 
     writer.close()
     total_training_time = str(datetime.timedelta(seconds=int(time.time() - start_time)))

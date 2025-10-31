@@ -1,0 +1,49 @@
+<types xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/types_file.xsd">
+
+    <!-- Car-usable road types only -->
+    <type id="highway.motorway" numLanes="2" speed="39.44" priority="14" oneway="true"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship pedestrian bicycle moped"/>
+    <type id="highway.trunk" numLanes="2" speed="27.78" priority="13" oneway="false"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship pedestrian bicycle"/>
+    <type id="highway.primary" numLanes="2" speed="27.78" priority="12" oneway="false"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship"/>
+    <type id="highway.secondary" numLanes="1" speed="27.78" priority="11" oneway="false"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship"/>
+    <type id="highway.tertiary" numLanes="1" speed="22.22" priority="10" oneway="false"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship"/>
+
+    <type id="highway.motorway_link" numLanes="1" speed="22.22" priority="9" oneway="true"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship pedestrian bicycle moped"/>
+    <type id="highway.trunk_link" numLanes="1" speed="22.22" priority="8" oneway="false"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship pedestrian bicycle"/>
+    <type id="highway.primary_link" numLanes="1" speed="22.22" priority="7" oneway="false"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship"/>
+    <type id="highway.secondary_link" numLanes="1" speed="22.22" priority="6" oneway="false"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship"/>
+    <type id="highway.tertiary_link" numLanes="1" speed="22.22" priority="5" oneway="false"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship"/>
+
+    <type id="highway.unclassified" numLanes="1" speed="13.89" priority="4" oneway="false"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship"/>
+    <type id="highway.residential" numLanes="1" speed="13.89" priority="3" oneway="false"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship"/>
+    <type id="highway.living_street" numLanes="1" speed="2.78" priority="2" oneway="false"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship"/>
+    <type id="highway.unsurfaced" numLanes="1" speed="8.33" priority="1" oneway="false"
+          disallow="rail rail_urban rail_electric rail_fast tram drone aircraft scooter container wheelchair subway cable_car ship"/>
+    <type id="highway.service" numLanes="1" speed="5.56" priority="1" oneway="false"
+          allow="delivery passenger"/>
+
+    <!-- Explicitly discard non-vehicular types to suppress warnings -->
+    <type id="highway.pedestrian" discard="true"/>
+    <type id="highway.footway" discard="true"/>
+    <type id="highway.cycleway" discard="true"/>
+    <type id="highway.path" discard="true"/>
+    <type id="highway.steps" discard="true"/>
+    <type id="highway.track" discard="true"/>
+    <type id="highway.busway" discard="true"/>
+    <type id="railway.subway" discard="true"/>
+    <type id="railway.tram" discard="true"/>
+    <type id="railway.rail" discard="true"/>
+
+</types>

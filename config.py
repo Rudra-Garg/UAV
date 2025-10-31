@@ -6,6 +6,7 @@ This file contains all simulation and model parameters for the HRL-based UAV dep
 Organized into logical sections for easier management and tuning.
 =========================================================================================
 """
+import random
 
 import torch
 
@@ -82,7 +83,7 @@ TRAFFIC_SCENARIOS = {
             'hotspot_ratio': 0.7  # 70% of vehicles are clustered in this hotspot.
         },
         'MULTI_CONGESTION': {
-            'num_hotspots': 3,  # This matches the original setup.
+            'num_hotspots': lambda: random.randint(3, 6),  # Randomly selects between 3 and 6 hotspots.
             'hotspot_radius': 1500,
             'hotspot_ratio': 0.8  # 70% of vehicles are spread across these hotspots.
         }
@@ -211,7 +212,7 @@ EVAL_EPISODES = 50  # Number of episodes to run for each scenario during evaluat
 EVAL_SCENARIO_VEHICLES = range(50, 121, 10)  # A range of vehicle counts to test during evaluation.
 
 # --- Visualization Settings ---
-VISUALIZATION = True  # Master switch to enable/disable Pygame visualization.
+VISUALIZATION = False  # Master switch to enable/disable Pygame visualization.
 VISUALIZER_STAYS_OPEN = True  # If False, visualizer closes after taking snapshots. If True, it stays open.
 SCREEN_WIDTH = 1500  # Width of the visualization window in pixels.
 SCREEN_HEIGHT = 800  # Height of the visualization window in pixels.
@@ -219,3 +220,19 @@ SAVE_VISUALIZATION_IMAGES = True  # If True, saves snapshots of the simulation a
 IMAGE_SAVE_PATH = "visualization_snapshots/"  # Folder to save the snapshot images.
 EPISODES_TO_SNAPSHOT = [1, 250, 500, 750, 1000]  # Save an image on these specific episodes.
 STEPS_TO_SNAPSHOT = [1, 25, 50, 75, 100]  # Save an image at these specific steps within the target episodes.
+
+
+# ========================================================================================
+# I. SUMO & TRAFFIC GENERATION
+# Defines the pool of real-world SUMO scenarios to be used during training.
+# ========================================================================================
+SUMO_SCENARIO_POOL = [
+    'delhi',
+    'mumbai',
+    'guwahati',
+    'bangaluru',
+    'paris',
+    'london',
+    'nyc',
+    'tokyo'
+]

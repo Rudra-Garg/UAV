@@ -8,9 +8,12 @@ class instances ('self') as arguments.
 """
 import logging
 import math
+import os
 from collections import deque
 
 import numpy as np
+import traci
+import traci.exceptions
 from numba import jit, njit
 from scipy.cluster.vq import kmeans
 
@@ -57,130 +60,137 @@ def _calculate_datarate_numba(bw_hz, p_watt, pl_db, noise_const):
 
 
 class VECNEnvironment:
-    # ... (__init__, reset are unchanged) ...
-    def __init__(self):
-        self.width, self.height, self.vehicles, self.uavs, self.ccc = AREA_WIDTH, AREA_HEIGHT, [], [], CloudComputingCenter()
+    def __init__(self, visualize=False):
+        self.width, self.height, self.uavs, self.ccc = AREA_WIDTH, AREA_HEIGHT, [], CloudComputingCenter()
         self.time_step, self.total_tasks_in_step, self.completed_tasks_in_step = 0, 0, 0
 
-    def _initialize_vehicle_positions_with_hotspots(self, num_vehicles, num_hotspots, hotspot_radius, hotspot_ratio):
-        """
-        Initializes vehicle positions with a number of hotspots (dense areas)
-        and some randomly scattered vehicles.
-        """
-        self.vehicles = []
+        # self.vehicles is now a dictionary, keyed by SUMO vehicle ID
+        self.vehicles = {}
 
-        if num_hotspots == 0:
-            self.vehicles = [Vehicle(i) for i in range(num_vehicles)]
-            return
+        self.visualize = visualize
 
-        hotspots = [np.random.rand(2) * np.array([self.width, self.height]) for _ in range(num_hotspots)]
+        if visualize:
+            self.sumo_binary = "sumo-gui"
+        else:
+            self.sumo_binary = "sumo"
 
-        num_hotspot_vehicles = int(num_vehicles * hotspot_ratio)
-        num_random_vehicles = num_vehicles - num_hotspot_vehicles
-
-        vehicle_id_counter = 0
-
-        # Place vehicles around hotspots
-        for i in range(num_hotspot_vehicles):
-            vehicle = Vehicle(vehicle_id_counter)
-            chosen_hotspot = hotspots[i % num_hotspots]
-            angle = np.random.uniform(0, 2 * np.pi)
-            radius = np.random.uniform(0, hotspot_radius)
-            offset = np.array([radius * np.cos(angle), radius * np.sin(angle)])
-
-            pos_2d = chosen_hotspot + offset
-            vehicle.position = np.append(pos_2d, 0)
-
-            # Ensure vehicles stay within the area boundaries
-            vehicle.position[0] = np.clip(vehicle.position[0], 0, self.width)
-            vehicle.position[1] = np.clip(vehicle.position[1], 0, self.height)
-
-            self.vehicles.append(vehicle)
-            vehicle_id_counter += 1
-
-        # Place the rest of the vehicles randomly
-        for _ in range(num_random_vehicles):
-            vehicle = Vehicle(vehicle_id_counter)
-            # This is the original random placement
-            pos_2d = np.random.rand(2) * np.array([self.width, self.height])
-            vehicle.position = np.append(pos_2d, 0)
-            self.vehicles.append(vehicle)
-            vehicle_id_counter += 1
-    # ... (rest of the class methods are unchanged) ...
+        self.sumo_cmd = [
+            self.sumo_binary,
+            "-c", "sumo_scenario/grid.sumocfg",
+            "--step-length", "1",
+            "--quit-on-end", "--start"
+        ]
 
     def reset(self, num_uavs=0, num_vehicles=NUM_VEHICLES):
-        """
-        Resets the environment with a randomly chosen traffic scenario and deploys UAVs intelligently.
-        """
-        logger.info("Resetting environment with %d UAVs and %d vehicles.", num_uavs, num_vehicles)
+        logger.info("Resetting environment with %d UAVs.", num_uavs)
         self.time_step = 0
 
-        # --- SCENARIO SELECTION LOGIC ---
-        # Randomly choose a scenario for this episode based on the weights in config
-        chosen_scenario_name = np.random.choice(
-            TRAFFIC_SCENARIOS['SCENARIO_NAMES'],
-            p=TRAFFIC_SCENARIOS['SCENARIO_WEIGHTS']
-        )
-        scenario_params = TRAFFIC_SCENARIOS['SCENARIOS'][chosen_scenario_name]
-        logger.info(f"Episode starting with traffic scenario: '{chosen_scenario_name}'")
+        try:
+            if traci.isLoaded():
+                # FIXED: Use self.visualize instead of checking GUI
+                if self.visualize:
+                    for uav in self.uavs:
+                        try:
+                            traci.polygon.remove(f"range_{uav.id}")
+                        except traci.exceptions.TraCIException:
+                            pass
+                traci.close()
+        except (traci.exceptions.FatalTraCIError, traci.exceptions.TraCIException):
+            pass
 
-        # Initialize vehicle positions based on the chosen scenario
-        self._initialize_vehicle_positions_with_hotspots(
-            num_vehicles=num_vehicles,
-            num_hotspots=scenario_params['num_hotspots'],
-            hotspot_radius=scenario_params['hotspot_radius'],
-            hotspot_ratio=scenario_params['hotspot_ratio']
-        )
+        # --- MODIFICATION: Select a random real-world scenario for this episode ---
+        # Choose a random city from the pool defined in config.py
+        selected_city = random.choice(SUMO_SCENARIO_POOL)
+        # Update the sumo_cmd to use the configuration file for the selected city
+        sumo_config_path = os.path.join("sumo_scenario", f"{selected_city}.sumocfg")
+        self.sumo_cmd[2] = sumo_config_path # Update the '-c' argument
+        logger.info("Starting SUMO with real-world scenario: %s", sumo_config_path)
+        # --- END OF MODIFICATION ---
 
-        centroids = []
+        traci.start(self.sumo_cmd)
 
-        if USE_DYNAMIC_DEMAND and self.vehicles:
-            vehicle_positions = np.array([v.position[:2] for v in self.vehicles])
+        # Let SUMO load the vehicles from the .rou.xml file
+        traci.simulationStep()
+        # Sync our Python vehicle objects with the ones SUMO has loaded
+        self._update_vehicles_from_sumo()
 
-            num_clusters_to_find = scenario_params['num_hotspots']
-            # Ensure we don't try to find more clusters than we have vehicles
-            num_clusters = min(num_clusters_to_find, len(self.vehicles))
-            congested_vehicle_ids = set()
-            if num_clusters > 0:
-                logger.debug("Finding %d congestion zones for dynamic demand.", num_clusters)
-                centroids, _ = kmeans(vehicle_positions, num_clusters, iter=10)
-
-                for i, pos in enumerate(vehicle_positions):
-                    for centroid in centroids:
-                        if np.linalg.norm(pos - centroid) < (UAV_COMMUNICATION_RANGE / 2):
-                            congested_vehicle_ids.add(self.vehicles[i].id)
-                            break
-            for v in self.vehicles:
-                if v.id in congested_vehicle_ids:
-                    v.generate_tasks(num_tasks=TASKS_PER_VEHICLE_CONGESTED)
-                else:
-                    v.generate_tasks(num_tasks=TASKS_PER_VEHICLE)
-        else:
-            for v in self.vehicles:
-                v.generate_tasks()
-
-        # Initialize UAVs and place them at the identified centroids
         self.uavs = [UAV(i) for i in range(num_uavs)]
-        if self.uavs and len(centroids) > 0: # Check length of centroids instead of .any() for robustness
-            for i, uav in enumerate(self.uavs):
-                centroid_to_assign = centroids[i % len(centroids)]
-                offset = (np.random.rand(2) * 2 - 1) * 100
-                uav.position[0] = centroid_to_assign[0] + offset[0]
-                uav.position[1] = centroid_to_assign[1] + offset[1]
+        for uav in self.uavs:
+            uav.reset_for_episode()  # Ensure UAVs are fully reset
+            uav_id_sumo = f"uav_{uav.id}"
+            traci.vehicle.add(
+                vehID=uav_id_sumo,
+                routeID='dummy_route',
+                typeID='UAV_TYPE'
+            )
+            traci.vehicle.setColor(uav_id_sumo, (255, 0, 0, 255))
+            traci.vehicle.setShapeClass(uav_id_sumo, "aircraft")
+            traci.vehicle.moveToXY(
+                vehID=uav_id_sumo,
+                edgeID="",
+                laneIndex=-1,
+                x=uav.position[0],
+                y=uav.position[1],
+                keepRoute=2
+            )
+
+            # FIXED: Use self.visualize
+            if self.visualize:
+                poly_id = f"range_{uav.id}"
+                color = (0, 255, 0, 60)
+                shape = self._get_circle_shape(uav.position, UAV_COMMUNICATION_RANGE)
+                traci.polygon.add(poly_id, shape, color, layer=0, fill=True)
+
+        if self.uavs and self.vehicles:
+            vehicle_positions = np.array([v.position[:2] for v in self.vehicles.values()])
+            if len(vehicle_positions) >= num_uavs > 0:
+                centroids, _ = kmeans(vehicle_positions, num_uavs, iter=10)
+                for i, uav in enumerate(self.uavs):
+                    centroid_to_assign = centroids[i % len(centroids)]
+                    offset = (np.random.rand(2) * 2 - 1) * 100
+                    uav.position[0] = centroid_to_assign[0] + offset[0]
+                    uav.position[1] = centroid_to_assign[1] + offset[1]
+                    traci.vehicle.moveToXY(f"uav_{uav.id}", "", -1, uav.position[0], uav.position[1], keepRoute=2)
+
+                    # FIXED: Use self.visualize
+                    if self.visualize:
+                        poly_id = f"range_{uav.id}"
+                        shape = self._get_circle_shape(uav.position, UAV_COMMUNICATION_RANGE)
+                        traci.polygon.setShape(poly_id, shape)
 
         return self.get_maddpg_states()
 
-    def step(self, actions):
-        # ... (step function logic is correct and unchanged) ...
+    def step(self, actions, visualize=False, episode_num=0, step_num=0):
         for uav in self.uavs:
-            # uav.energy_consumed_this_step = 0.0
             uav.profit_this_step = 0.0
 
         self._update_active_tasks()
-        for i, uav in enumerate(self.uavs): uav.move(np.array([actions[i][0], actions[i][1], 0]) * UAV_MAX_SPEED)
-        for vehicle in self.vehicles: vehicle.move()
 
-        # Use the config flag to choose which assignment logic to run
+        for i, uav in enumerate(self.uavs):
+            uav.move(np.array([actions[i][0], actions[i][1], 0]) * UAV_MAX_SPEED)
+
+        for uav in self.uavs:
+            traci.vehicle.moveToXY(
+                vehID=f"uav_{uav.id}",
+                edgeID="",
+                laneIndex=-1,
+                x=uav.position[0],
+                y=uav.position[1],
+                keepRoute=2
+            )
+
+            # FIXED: Use self.visualize
+            if self.visualize:
+                try:
+                    poly_id = f"range_{uav.id}"
+                    shape = self._get_circle_shape(uav.position, UAV_COMMUNICATION_RANGE)
+                    traci.polygon.setShape(poly_id, shape)
+                except traci.exceptions.TraCIException:
+                    pass
+
+        traci.simulationStep()
+        self._update_vehicles_from_sumo()
+
         if USE_SIMPLIFIED_OFFLOADING:
             self._assign_new_tasks_simplified()
         else:
@@ -191,7 +201,47 @@ class VECNEnvironment:
         next_states = self.get_maddpg_states()
         self.time_step += 1
         done = self.time_step >= INNER_STEPS
+
+        if done:
+            traci.close()
+
         return next_states, rewards, done
+
+    def _get_circle_shape(self, center_pos, radius, num_points=20):
+        """Generates a list of (x,y) points for a circle polygon."""
+        angles = np.linspace(0, 2 * np.pi, num_points, endpoint=False)
+        points = []
+        for angle in angles:
+            x = center_pos[0] + radius * np.cos(angle)
+            y = center_pos[1] + radius * np.sin(angle)
+            points.append((x, y))
+        return points
+
+    def _update_vehicles_from_sumo(self):
+        """
+        NEW helper method to synchronize Python vehicle objects with SUMO.
+        - Removes departed vehicles.
+        - Adds newly arrived vehicles.
+        - Updates positions of all current vehicles.
+        """
+        all_sumo_ids = traci.vehicle.getIDList()
+        current_sumo_ids = set(v_id for v_id in all_sumo_ids if not v_id.startswith('uav_'))
+
+        # Remove vehicles that have left the simulation
+        for v_id in list(self.vehicles.keys()):
+            if v_id not in current_sumo_ids:
+                del self.vehicles[v_id]
+
+        # Add new vehicles and update existing ones
+        for v_id in current_sumo_ids:
+            if v_id not in self.vehicles:
+                self.vehicles[v_id] = Vehicle(v_id)
+                # Generate tasks for the new vehicle
+                self.vehicles[v_id].generate_tasks()
+
+            # Update position and speed from SUMO
+            pos = traci.vehicle.getPosition(v_id)
+            self.vehicles[v_id].position = np.array([pos[0], pos[1], 0])
 
     def _consume_hover_energy(self):
         for uav in self.uavs:
@@ -240,7 +290,7 @@ class VECNEnvironment:
             state = [
                 uav.position[0] / self.width,
                 uav.position[1] / self.height,
-                len([v for v in self.vehicles if self._get_distance_obj(uav, v) <= UAV_COMMUNICATION_RANGE]),
+                len([v for v in self.vehicles.values() if self._get_distance_obj(uav, v) <= UAV_COMMUNICATION_RANGE]),
                 uav.tasks_processed_count,
                 uav.profit_generated / 1000.0,
                 uav.current_energy / uav.max_energy if uav.max_energy > 0 else 0,
@@ -274,12 +324,12 @@ class VECNEnvironment:
         total_cost = sum(BETA_MAINTENANCE + BETA_COMPUTATION * u.F_total for u in self.uavs)
         net_profit = total_profit - total_cost
         tasks_completed = sum(uav.tasks_processed_count for uav in self.uavs)
-        avg_latency = np.mean([t.completed_latency for v in self.vehicles for t in v.tasks if
+        avg_latency = np.mean([t.completed_latency for v in self.vehicles.values() for t in v.tasks if
                                t.is_completed]) if tasks_completed > 0 else 0
         covered_vehicles = set()
         if num_uavs > 0:
             for uav in self.uavs:
-                for v in self.vehicles:
+                for v in self.vehicles.values():
                     if self._get_distance_obj(uav, v) <= UAV_COMMUNICATION_RANGE: covered_vehicles.add(v.id)
         return np.array([tasks_completed, num_uavs, total_cost, net_profit * REWARD_SCALING_FACTOR, avg_latency,
                          len(covered_vehicles)])
@@ -291,7 +341,7 @@ class VECNEnvironment:
     def calculate_datarate_user_to_uav(self, user, uav, num_sharing_users=1):
         """
         Calculates the data rate from a user to a UAV, considering TDMA-based
-        bandwidth sharing if enabled in the 
+        bandwidth sharing if enabled in the
         """
         # If dynamic bandwidth is disabled, or if there's only one user, use the full bandwidth.
         if not DYNAMIC_BANDWIDTH or num_sharing_users <= 1:
@@ -410,7 +460,7 @@ class VECNEnvironment:
 
     # Updated _update_active_tasks
     def _update_active_tasks(self):
-        all_tasks = [task for vehicle in self.vehicles for task in vehicle.tasks]
+        all_tasks = [task for vehicle in self.vehicles.values() for task in vehicle.tasks]
         for task in all_tasks:
             original_status = task.status
 
@@ -578,7 +628,9 @@ class VECNEnvironment:
                 logger.debug(f"Task {task.id}: No viable offloading option found. Task remains PENDING.")
 
     def _finalize_task_assignment(self, task, best_option, vehicle, uav_potential_load):
-        """Helper method to finalize the assignment and update states."""
+        """
+        Helper method to finalize the assignment and update states.
+        """
         offload_type, entry_uav, target_uav, latency, profit, hop_path_ids = best_option
 
         # RESTORED THIS IMPORTANT LOG
@@ -660,12 +712,12 @@ class VECNEnvironment:
         2. If not, tries to find a relay path to a UAV with the right cache.
         3. If not, offloads to the cloud as a last resort.
         """
-        pending_tasks = [task for v in self.vehicles for task in v.tasks if task.status == 'PENDING']
+        pending_tasks = [task for v in self.vehicles.values() for task in v.tasks if task.status == 'PENDING']
         if not self.uavs or not pending_tasks:
             return
 
         for task in pending_tasks:
-            vehicle = next(v for v in self.vehicles if v.id == task.owner_id)
+            vehicle = next(v for v in self.vehicles.values() if v.id == task.owner_id)
 
             # Find all IDLE UAVs within the vehicle's communication range
             idle_uavs_in_range = [
@@ -680,12 +732,26 @@ class VECNEnvironment:
             # --- Priority 1: Find a LOCAL processor ---
             # Search for a UAV in range that has the right service/content and resources
             local_processor = None
+            found_local_candidate = False
             for uav in idle_uavs_in_range:
-                if (uav.has_service(task.service_type) and
-                        uav.has_content(task.content_type) and
-                        uav.F_remain >= task.cpu_cycles_req):
+                # Add detailed checks and print statements
+                has_service = uav.has_service(task.service_type)
+                has_content = uav.has_content(task.content_type)
+                has_resources = uav.F_remain >= task.cpu_cycles_req
+
+                if has_service and has_content and has_resources:
                     local_processor = uav
-                    break  # Found a suitable local UAV, stop searching
+                    found_local_candidate = True  # Mark that we found one
+                    logger.info(f"Task {task.id}: Found suitable LOCAL processor UAV {uav.id}.")
+                    break  # Found one, stop searching
+
+                else:
+                    # This is the crucial part: log WHY it failed
+                    reasons = []
+                    if not has_service: reasons.append("SERVICE_CACHE_MISS")
+                    if not has_content: reasons.append("CONTENT_CACHE_MISS")
+                    if not has_resources: reasons.append("INSUFFICIENT_RESOURCES")
+                    logger.debug(f"Task {task.id}: Skipping local UAV {uav.id}. Reasons: {', '.join(reasons)}")
 
             if local_processor:
                 self._finalize_task_assignment_simplified(task, 'LOCAL_UAV', local_processor, local_processor)
@@ -722,7 +788,7 @@ class VECNEnvironment:
         NEW helper to finalize assignment for the 3 simplified UAV-based scenarios.
         """
         task_size_mbit = task.data_size_bits / 1e6
-        vehicle = next(v for v in self.vehicles if v.id == task.owner_id)
+        vehicle = next(v for v in self.vehicles.values() if v.id == task.owner_id)
 
         # Common first step: Upload from vehicle to entry UAV
         datarate_to_entry = self.calculate_datarate_user_to_uav(vehicle, entry_uav)
@@ -760,6 +826,8 @@ class VECNEnvironment:
             datarate_to_cloud = self.calculate_datarate_uav_to_ccc(entry_uav)
             raw_relay_seconds = task_size_mbit / (datarate_to_cloud + 1e-9)
             relay_duration = math.ceil(raw_relay_seconds * LATENCY_SCALING_FACTOR)
+
+            task.relay_complete_time = task.upload_complete_time + relay_duration
             task.compute_complete_time = task.relay_complete_time + CLOUD_COMPUTE_LATENCY
             logger.info(
                 f"Task {task.id} assigned to CLOUD via UAV {entry_uav.id}. Latency: {upload_duration + relay_duration + CLOUD_COMPUTE_LATENCY} steps.")

@@ -52,20 +52,14 @@ class Task:
 class Vehicle:
     def __init__(self, vehicle_id):
         self.id = vehicle_id
-        pos_2d = np.random.rand(2) * np.array([AREA_WIDTH, AREA_HEIGHT])
-        self.position = np.append(pos_2d, 0)
-        speed = np.random.uniform(VEHICLE_MIN_SPEED, VEHICLE_MAX_SPEED)
-        angle = np.random.uniform(0, 2 * np.pi)
-        self.velocity = np.array([speed * np.cos(angle), speed * np.sin(angle), 0])
+        # Position is now set externally by the environment from SUMO data
+        self.position = np.zeros(3)
         self.tasks = []
 
-    def move(self, timestep=1):
-        self.position += self.velocity * timestep
-        self.position[0] %= AREA_WIDTH
-        self.position[1] %= AREA_HEIGHT
+    # The move() method is handled by sumo now.
 
     def generate_tasks(self, num_tasks=TASKS_PER_VEHICLE):
-        """MODIFIED: Generates a specific number of tasks for the vehicle."""
+        """Generates a specific number of tasks for the vehicle."""
         self.tasks = [Task(f"{self.id}-{i}", self.id) for i in range(num_tasks)]
 
     def __repr__(self):
