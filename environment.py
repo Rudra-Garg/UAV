@@ -9,7 +9,7 @@ class instances ('self') as arguments.
 import logging
 import math
 import os
-from collections import deque
+from collections import deque, Counter
 
 import numpy as np
 import traci
@@ -67,6 +67,15 @@ class VECNEnvironment:
         # self.vehicles is now a dictionary, keyed by SUMO vehicle ID
         self.vehicles = {}
 
+        # Vehicle spawning management
+        self.available_edges = []
+        self.target_vehicle_count = 0
+        self.vehicle_spawn_counter = 0
+
+        self.local_offload_count = 0
+        self.relay_offload_count = 0
+        self.cloud_offload_count = 0
+
         self.visualize = visualize
 
         if visualize:
@@ -78,13 +87,19 @@ class VECNEnvironment:
             self.sumo_binary,
             "-c", "sumo_scenario/grid.sumocfg",
             "--step-length", "1",
-            "--quit-on-end", "--start"
+            "--quit-on-end", "--start",
+            "--no-warnings", "--no-step-log",
+            "--error-log", "sumo_errors.log",
         ]
 
     def reset(self, num_uavs=0, num_vehicles=NUM_VEHICLES):
-        logger.info("Resetting environment with %d UAVs.", num_uavs)
+        logger.info("Resetting environment with %d UAVs and target of %d vehicles.", num_uavs, num_vehicles)
         self.time_step = 0
-
+        self.target_vehicle_count = num_vehicles
+        self.vehicle_spawn_counter = 0
+        self.local_offload_count = 0
+        self.relay_offload_count = 0
+        self.cloud_offload_count = 0
         try:
             if traci.isLoaded():
                 # FIXED: Use self.visualize instead of checking GUI
@@ -99,20 +114,28 @@ class VECNEnvironment:
             pass
 
         # --- MODIFICATION: Select a random real-world scenario for this episode ---
-        # Choose a random city from the pool defined in config.py
         selected_city = random.choice(SUMO_SCENARIO_POOL)
-        # Update the sumo_cmd to use the configuration file for the selected city
         sumo_config_path = os.path.join("sumo_scenario", f"{selected_city}.sumocfg")
-        self.sumo_cmd[2] = sumo_config_path # Update the '-c' argument
+        self.sumo_cmd[2] = sumo_config_path
         logger.info("Starting SUMO with real-world scenario: %s", sumo_config_path)
         # --- END OF MODIFICATION ---
 
         traci.start(self.sumo_cmd)
 
-        # Let SUMO load the vehicles from the .rou.xml file
+        # Load the network to get available edges for spawning
         traci.simulationStep()
-        # Sync our Python vehicle objects with the ones SUMO has loaded
+        self._load_network_edges()
+
+        # Spawn initial vehicle fleet
+        self._spawn_initial_vehicles(num_vehicles)
+
+        # Run a few steps to let vehicles distribute
+        for _ in range(5):
+            traci.simulationStep()
+
+        # Sync our Python vehicle objects with SUMO
         self._update_vehicles_from_sumo()
+        logger.info("Initial vehicle count: %d", len(self.vehicles))
 
         self.uavs = [UAV(i) for i in range(num_uavs)]
         for uav in self.uavs:
@@ -160,6 +183,76 @@ class VECNEnvironment:
 
         return self.get_maddpg_states()
 
+    def _load_network_edges(self):
+        """Load available edges from the SUMO network for vehicle spawning."""
+        all_edges = traci.edge.getIDList()
+        # Filter out internal edges (those with ':' in the name)
+        self.available_edges = [e for e in all_edges if ':' not in e]
+        logger.info("Loaded %d available edges for vehicle spawning", len(self.available_edges))
+
+    def _spawn_initial_vehicles(self, target_count):
+        """Spawn initial vehicle fleet at random positions."""
+        if not self.available_edges:
+            logger.warning("No available edges for vehicle spawning!")
+            return
+
+        for i in range(target_count):
+            self._spawn_single_vehicle()
+
+        logger.info("Spawned %d initial vehicles", target_count)
+
+    def _spawn_single_vehicle(self):
+        """Spawn a single vehicle on a random edge."""
+        if not self.available_edges:
+            return False
+
+        try:
+            vehicle_id = f"vehicle_{self.vehicle_spawn_counter}"
+            self.vehicle_spawn_counter += 1
+
+            # Pick random start and end edges
+            from_edge = np.random.choice(self.available_edges)
+            to_edge = np.random.choice(self.available_edges)
+
+            # Try to find a route
+            try:
+                route = traci.simulation.findRoute(from_edge, to_edge)
+                if route and len(route.edges) > 0:
+                    route_id = f"route_{vehicle_id}"
+                    traci.route.add(route_id, route.edges)
+
+                    # Add the vehicle
+                    traci.vehicle.add(
+                        vehID=vehicle_id,
+                        routeID=route_id,
+                        typeID='DEFAULT_VEHTYPE'
+                    )
+                    return True
+            except traci.exceptions.TraCIException:
+                # No valid route found, try different edges
+                pass
+
+            return False
+
+        except Exception as e:
+            logger.debug(f"Failed to spawn vehicle: {e}")
+            return False
+
+    def _maintain_vehicle_count(self):
+        """Respawn vehicles to maintain target count."""
+        current_count = len([v_id for v_id in traci.vehicle.getIDList() if not v_id.startswith('uav_')])
+
+        if current_count < self.target_vehicle_count:
+            vehicles_to_spawn = self.target_vehicle_count - current_count
+            spawned = 0
+            # Try to spawn up to 10 vehicles per step to avoid slowdown
+            for _ in range(min(vehicles_to_spawn, 10)):
+                if self._spawn_single_vehicle():
+                    spawned += 1
+
+            if spawned > 0:
+                logger.debug(f"Respawned {spawned} vehicles (current: {current_count + spawned}/{self.target_vehicle_count})")
+
     def step(self, actions, visualize=False, episode_num=0, step_num=0):
         for uav in self.uavs:
             uav.profit_this_step = 0.0
@@ -189,6 +282,10 @@ class VECNEnvironment:
                     pass
 
         traci.simulationStep()
+
+        # Maintain vehicle count by respawning
+        self._maintain_vehicle_count()
+
         self._update_vehicles_from_sumo()
 
         if USE_SIMPLIFIED_OFFLOADING:
@@ -206,6 +303,44 @@ class VECNEnvironment:
             traci.close()
 
         return next_states, rewards, done
+
+    def close(self):
+        """
+        Properly close the SUMO connection and clean up resources.
+        This method can be called multiple times safely.
+        """
+        try:
+            # Check if TraCI is loaded before attempting to close
+            if traci.isLoaded():
+                logger.debug("Closing SUMO connection...")
+
+                # Clean up visualization elements if they exist
+                if self.visualize and self.uavs:
+                    for uav in self.uavs:
+                        try:
+                            traci.polygon.remove(f"range_{uav.id}")
+                        except (traci.exceptions.TraCIException, traci.exceptions.FatalTraCIError):
+                            pass  # Polygon might not exist or connection already closed
+
+                # Close the TraCI connection
+                traci.close()
+                logger.debug("SUMO connection closed successfully.")
+
+        except (traci.exceptions.FatalTraCIError, traci.exceptions.TraCIException) as e:
+            # Connection might already be closed or never opened
+            logger.debug(f"TraCI close attempt: {e}")
+            pass
+
+        except Exception as e:
+            # Catch any other unexpected errors during cleanup
+            logger.warning(f"Unexpected error during environment close: {e}")
+            pass
+
+    def __del__(self):
+        """
+        Destructor to ensure SUMO is closed when the environment object is deleted.
+        """
+        self.close()
 
     def _get_circle_shape(self, center_pos, radius, num_points=20):
         """Generates a list of (x,y) points for a circle polygon."""
@@ -503,7 +638,7 @@ class VECNEnvironment:
                              self.time_step)
 
     def _assign_new_tasks(self):
-        pending_tasks = [task for v in self.vehicles for task in v.tasks if task.status == 'PENDING']
+        pending_tasks = [task for v in self.vehicles.values() for task in v.tasks if task.status == 'PENDING']
 
         # High-level log for the start of the assignment phase
         logger.debug("Attempting to assign %d pending tasks at step %d.", len(pending_tasks), self.time_step)
@@ -524,13 +659,13 @@ class VECNEnvironment:
         if DYNAMIC_BANDWIDTH:
             vehicles_with_tasks = {task.owner_id for task in pending_tasks}
             for vehicle_id in vehicles_with_tasks:
-                vehicle = next(v for v in self.vehicles if v.id == vehicle_id)
+                vehicle = next(v for v in self.vehicles.values() if v.id == vehicle_id)
                 for uav in self.uavs:
                     if uav.status == 'IDLE' and self._get_distance_obj(uav, vehicle) <= UAV_COMMUNICATION_RANGE:
                         uav_potential_load[uav.id] += 1
 
         for task in pending_tasks:
-            vehicle = next(v for v in self.vehicles if v.id == task.owner_id)
+            vehicle = next(v for v in self.vehicles.values() if v.id == task.owner_id)
             idle_uavs_in_range = [u for u in self.uavs if
                                   u.status == 'IDLE' and self._get_distance_obj(u, vehicle) <= UAV_COMMUNICATION_RANGE]
 
@@ -783,10 +918,63 @@ class VECNEnvironment:
             cloud_entry_uav = min(idle_uavs_in_range, key=lambda u: self._get_distance_obj(u, vehicle))
             self._finalize_task_assignment_simplified(task, 'CLOUD', cloud_entry_uav, None)
 
+    def get_episode_statistics(self):
+        """
+        Calculates and returns a dictionary of detailed statistics for the completed episode.
+        This should be called at the end of an episode, before `reset`.
+        """
+        if not self.vehicles:
+            return {}  # Return empty dict if no vehicles
+
+        # --- Task Statistics ---
+        all_tasks = [task for v in self.vehicles.values() for task in v.tasks]
+        task_status_counts = Counter(t.status for t in all_tasks)
+
+        # --- Vehicle Coverage ---
+        covered_vehicles = set()
+        if self.uavs:
+            for uav in self.uavs:
+                for v in self.vehicles.values():
+                    if self._get_distance_obj(uav, v) <= UAV_COMMUNICATION_RANGE:
+                        covered_vehicles.add(v.id)
+        coverage_ratio = len(covered_vehicles) / len(self.vehicles) if self.vehicles else 0
+
+        # --- UAV Fleet Statistics ---
+        if self.uavs:
+            avg_energy_pct = np.mean([u.current_energy / u.max_energy for u in self.uavs]) * 100
+            avg_compute_load_pct = (1 - np.mean([u.F_remain / u.F_total for u in self.uavs])) * 100
+            busy_uavs = sum(1 for u in self.uavs if u.status == 'BUSY')
+            uav_busy_pct = (busy_uavs / len(self.uavs)) * 100
+        else:
+            avg_energy_pct, avg_compute_load_pct, uav_busy_pct = 0, 0, 0
+
+        stats = {
+            'SUMO/active_vehicles': len(self.vehicles),
+            'SUMO/coverage_ratio': coverage_ratio,
+            'Tasks/pending': task_status_counts.get('PENDING', 0),
+            'Tasks/uploading': task_status_counts.get('UPLOADING', 0),
+            'Tasks/computing': task_status_counts.get('COMPUTING', 0),
+            'Tasks/completed_in_episode': task_status_counts.get('COMPLETED', 0),
+            'Offloading/local_uav': self.local_offload_count,
+            'Offloading/relay_uav': self.relay_offload_count,
+            'Offloading/cloud': self.cloud_offload_count,
+            'UAV/avg_energy_remaining_pct': avg_energy_pct,
+            'UAV/avg_compute_load_pct': avg_compute_load_pct,
+            'UAV/busy_pct': uav_busy_pct,
+        }
+        return stats
+
     def _finalize_task_assignment_simplified(self, task, destination, entry_uav, target_uav):
         """
         NEW helper to finalize assignment for the 3 simplified UAV-based scenarios.
         """
+
+        if destination == 'LOCAL_UAV':
+            self.local_offload_count += 1
+        elif destination == 'RELAY_UAV':
+            self.relay_offload_count += 1
+        elif destination == 'CLOUD':
+            self.cloud_offload_count += 1
         task_size_mbit = task.data_size_bits / 1e6
         vehicle = next(v for v in self.vehicles.values() if v.id == task.owner_id)
 

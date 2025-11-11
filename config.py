@@ -227,6 +227,7 @@ STEPS_TO_SNAPSHOT = [1, 25, 50, 75, 100]  # Save an image at these specific step
 # Defines the pool of real-world SUMO scenarios to be used during training.
 # ========================================================================================
 SUMO_SCENARIO_POOL = [
+    # 'grid',
     'delhi',
     'mumbai',
     'guwahati',

@@ -4,11 +4,11 @@ repo_contents.txt
 osm_data
 sumo_scenario
 visualization_snapshots
-Evaluations
+Evaluations_1
 models
 logs
 runs
-sensitivity_analysis_results
+sensitivity_analysis_results*
 
 ### Python template
 # Byte-compiled / optimized / DLL files

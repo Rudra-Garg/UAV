@@ -21,7 +21,7 @@ class OUPOS_Agent:
     def select_actions(self, env, states):
         if not env.vehicles:
             return [[0, 0]]
-        vehicle_positions = np.array([v.position[:2] for v in env.vehicles])
+        vehicle_positions = np.array([v.position[:2] for v in env.vehicles.values()])
         center_of_mass = np.mean(vehicle_positions, axis=0)
         uav_position = env.uavs[0].position[:2]
         direction_vector = center_of_mass - uav_position
@@ -47,8 +47,19 @@ class MRUPOS_Agent:
     def select_actions(self, env, states):
         if not env.vehicles:
             return [np.zeros(2) for _ in range(self.num_uavs)]
-        vehicle_positions = np.array([v.position[:2] for v in env.vehicles])
-        centroids, _ = kmeans(vehicle_positions, self.num_uavs)
+        vehicle_positions = np.array([v.position[:2] for v in env.vehicles.values()])
+
+        # Handle case where there are fewer vehicles than UAVs
+        num_clusters = min(len(vehicle_positions), self.num_uavs)
+        if num_clusters == 0:
+            return [np.zeros(2) for _ in range(self.num_uavs)]
+
+        centroids, _ = kmeans(vehicle_positions, num_clusters)
+
+        # If we have more UAVs than centroids, duplicate centroids
+        if len(centroids) < len(env.uavs):
+            centroids = np.vstack([centroids] * (len(env.uavs) // len(centroids) + 1))[:len(env.uavs)]
+
         actions = []
         for i, uav in enumerate(env.uavs):
             direction = centroids[i] - uav.position[:2]

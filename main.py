@@ -84,7 +84,6 @@ def run_training():
     maddpg_controller = None  # Initialize to handle case where first episode has 0 UAVs
 
     for episode in range(TOTAL_EPISODES):
-        current_episode_num = episode + 1
 
         logger.info("========== Starting Episode %d ==========", episode + 1)
         outer_state = env.get_ddqn_state()
@@ -92,6 +91,10 @@ def run_training():
 
         num_uavs = ddqn_agent.select_action(outer_state) + 1
         logger.info("DDQN Agent selected to deploy %d UAVs", num_uavs)
+
+        # Initialize trackers for inner loop losses
+        episode_maddpg_critic_losses = []
+        episode_maddpg_actor_losses = []
 
         if num_uavs > 0:
             maddpg_controller = MADDPGController(num_agents=num_uavs, state_dim=MADDPG_STATE_DIM,
@@ -101,7 +104,6 @@ def run_training():
 
             logger.info("--- Starting Inner Loop (MADDPG) for %d steps ---", INNER_STEPS)
             for t in range(INNER_STEPS):
-                current_step_num = t + 1
 
                 actions = maddpg_controller.select_actions(inner_states)
                 next_inner_states, rewards, done = env.step(actions)
@@ -111,7 +113,10 @@ def run_training():
                 flat_next_states = np.concatenate(next_inner_states)
                 maddpg_controller.memory.add(flat_states, flat_actions, rewards[0], flat_next_states, done)
 
-                maddpg_controller.learn()
+                critic_loss, actor_loss = maddpg_controller.learn()
+                if critic_loss > 0:  # Only append if a learning step was actually performed
+                    episode_maddpg_critic_losses.append(critic_loss)
+                    episode_maddpg_actor_losses.append(actor_loss)
                 maddpg_controller.update_targets()
 
                 inner_states = next_inner_states
@@ -129,16 +134,37 @@ def run_training():
 
         ddqn_action = num_uavs - 1
         ddqn_agent.memory.add(outer_state, ddqn_action, outer_reward, next_outer_state, False)
-        ddqn_agent.learn()
+        ddqn_loss = ddqn_agent.learn()
         ddqn_agent.update_target_network()
 
         scores_window.append(outer_reward)
         avg_score = np.mean(scores_window)
 
-        writer.add_scalar('Profit/Average_Profit_100_Episodes', avg_score, episode + 1)
-        writer.add_scalar('Profit/Episode_Profit', outer_reward, episode + 1)
-        writer.add_scalar('DDQN/Epsilon', ddqn_agent.epsilon, episode + 1)
-        writer.add_scalar('DDQN/UAVs_Chosen', num_uavs, episode + 1)
+        # --- NEW: TensorBoard Logging ---
+        current_episode_num = episode + 1
+
+        # 1. Log core profit and agent metrics
+        writer.add_scalar('Profit/Average_Profit_100_Episodes', avg_score, current_episode_num)
+        writer.add_scalar('Profit/Episode_Profit', outer_reward, current_episode_num)
+        writer.add_scalar('DDQN/Epsilon', ddqn_agent.epsilon, current_episode_num)
+        writer.add_scalar('DDQN/UAVs_Chosen', num_uavs, current_episode_num)
+
+        # 2. Log RL loss values
+        writer.add_scalar('Loss/DDQN_Critic_Loss', ddqn_loss, current_episode_num)
+        if episode_maddpg_critic_losses:
+            writer.add_scalar('Loss/MADDPG_Avg_Critic_Loss', np.mean(episode_maddpg_critic_losses), current_episode_num)
+            writer.add_scalar('Loss/MADDPG_Avg_Actor_Loss', np.mean(episode_maddpg_actor_losses), current_episode_num)
+
+        # 3. Log detailed environment statistics
+        episode_stats = env.get_episode_statistics()
+        if episode_stats: # Check if stats are available
+            # Log each metric from the stats dictionary
+            for key, value in episode_stats.items():
+                writer.add_scalar(key, value, current_episode_num)
+
+        # Log latency from the outer state
+        avg_latency = next_outer_state[4]
+        writer.add_scalar('Tasks/average_latency', avg_latency, current_episode_num)
 
         elapsed_time = time.time() - start_time
         avg_time_per_episode = elapsed_time / (episode + 1)
