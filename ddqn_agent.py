@@ -80,7 +80,7 @@ class DDQNAgent:
         if len(self.memory) < DDQN_BATCH_SIZE:
             logger.debug("Skipping learning step. Replay buffer size (%d) is less than batch size (%d).",
                          len(self.memory), DDQN_BATCH_SIZE)
-            return
+            return 0.0
 
         states, actions, rewards, next_states, dones = self.memory.sample()
         actions = actions.long()  # Actions need to be long type for gather()
@@ -100,7 +100,8 @@ class DDQNAgent:
 
         # Calculate the Mean Squared Error loss between current and expected Q-values.
         loss = F.mse_loss(current_q, expected_q)
-        logger.debug("Learning step complete. DDQN loss: %.4f", loss.item())
+        loss_item = loss.item()
+        logger.debug("Learning step complete. DDQN loss: %.4f", loss_item)
 
         # Perform backpropagation.
         self.optimizer.zero_grad()
@@ -110,6 +111,8 @@ class DDQNAgent:
         # Decay epsilon to reduce exploration over time.
         if self.epsilon > DDQN_EPSILON_END:
             self.epsilon *= DDQN_EPSILON_DECAY
+
+        return loss_item
 
     def update_target_network(self):
         """

@@ -76,6 +76,7 @@ def run_training():
     logger.info("--- Initializing HRL Training on device: %s ---", DEVICE)
 
     writer = SummaryWriter(f"runs/muceds_experiment_{timestamp}")
+    # MODIFIED: Pass visualize=False since this is the non-SUMO version
     env = VECNEnvironment()
     ddqn_agent = DDQNAgent(state_dim=DDQN_STATE_DIM, action_space=DDQN_ACTION_SPACE)
 
@@ -83,28 +84,7 @@ def run_training():
     start_time = time.time()
     maddpg_controller = None  # Initialize to handle case where first episode has 0 UAVs
 
-    visualizer = None
-    # --- NEW: Initialize visualizer at the start if it's meant to stay open ---
-    if VISUALIZATION and VISUALIZER_STAYS_OPEN:
-        print("\nInitializing persistent visualization...")
-        visualizer = Visualizer(env.width, env.height)
-
     for episode in range(TOTAL_EPISODES):
-        current_episode_num = episode + 1
-        is_snapshot_episode = current_episode_num in EPISODES_TO_SNAPSHOT
-
-        # --- REVISED Visualization Lifecycle Management ---
-        # If the visualizer is NOT persistent, manage it on a per-episode basis.
-        if VISUALIZATION and not VISUALIZER_STAYS_OPEN:
-            # Create it if it's a snapshot episode and it doesn't exist
-            if is_snapshot_episode and visualizer is None:
-                print(f"\nInitializing visualization for Episode {current_episode_num}...")
-                visualizer = Visualizer(env.width, env.height)
-            # Close it if it exists and we've moved past the snapshot episode
-            elif visualizer is not None and not is_snapshot_episode:
-                print(f"\nClosing visualization after Episode {current_episode_num - 1}...")
-                visualizer.close()
-                visualizer = None
 
         logger.info("========== Starting Episode %d ==========", episode + 1)
         outer_state = env.get_ddqn_state()
@@ -113,33 +93,46 @@ def run_training():
         num_uavs = ddqn_agent.select_action(outer_state) + 1
         logger.info("DDQN Agent selected to deploy %d UAVs", num_uavs)
 
+        # Initialize trackers for inner loop losses
+        episode_maddpg_critic_losses = []
+        episode_maddpg_actor_losses = []
+
         if num_uavs > 0:
             maddpg_controller = MADDPGController(num_agents=num_uavs, state_dim=MADDPG_STATE_DIM,
                                                  action_dim=MADDPG_ACTION_DIM)
             logger.info("Initialized MADDPGController for %d agents.", num_uavs)
-            inner_states = env.reset(num_uavs=num_uavs)
+            inner_states = env.reset(num_uavs=num_uavs, num_vehicles=NUM_VEHICLES)
 
             logger.info("--- Starting Inner Loop (MADDPG) for %d steps ---", INNER_STEPS)
             for t in range(INNER_STEPS):
-                # If a visualizer object exists (for either mode), draw the environment.
-                if visualizer is not None:
-                    visualizer.draw(env.uavs, env.vehicles, current_episode_num, t + 1)
 
                 actions = maddpg_controller.select_actions(inner_states)
                 next_inner_states, rewards, done = env.step(actions)
+
+                # Ensure all lists have content before concatenating
+                if not all(s is not None and len(s) > 0 for s in inner_states): continue
+                if not all(a is not None and len(a) > 0 for a in actions): continue
+                if not all(ns is not None and len(ns) > 0 for ns in next_inner_states): continue
 
                 flat_states = np.concatenate(inner_states)
                 flat_actions = np.concatenate(actions)
                 flat_next_states = np.concatenate(next_inner_states)
                 maddpg_controller.memory.add(flat_states, flat_actions, rewards[0], flat_next_states, done)
 
-                maddpg_controller.learn()
+                # learn() method in MADDPG returns two values
+                critic_loss, actor_loss = maddpg_controller.learn()
+                if critic_loss is not None and actor_loss is not None:
+                    if critic_loss > 0:  # Only append if a learning step was actually performed
+                        episode_maddpg_critic_losses.append(critic_loss)
+                        episode_maddpg_actor_losses.append(actor_loss)
                 maddpg_controller.update_targets()
 
                 inner_states = next_inner_states
                 if done:
                     break
             logger.info("--- Inner Loop (MADDPG) Finished ---")
+        else:  # Handle case where 0 UAVs are selected
+            env.reset(num_uavs=0, num_vehicles=NUM_VEHICLES)
 
         next_outer_state = env.get_ddqn_state()
         outer_reward = next_outer_state[3]
@@ -147,16 +140,40 @@ def run_training():
 
         ddqn_action = num_uavs - 1
         ddqn_agent.memory.add(outer_state, ddqn_action, outer_reward, next_outer_state, False)
-        ddqn_agent.learn()
+        # This now correctly returns the loss value
+        ddqn_loss = ddqn_agent.learn()
         ddqn_agent.update_target_network()
 
         scores_window.append(outer_reward)
         avg_score = np.mean(scores_window)
 
-        writer.add_scalar('Profit/Average_Profit_100_Episodes', avg_score, episode + 1)
-        writer.add_scalar('Profit/Episode_Profit', outer_reward, episode + 1)
-        writer.add_scalar('DDQN/Epsilon', ddqn_agent.epsilon, episode + 1)
-        writer.add_scalar('DDQN/UAVs_Chosen', num_uavs, episode + 1)
+        # --- FULLY SYNCHRONIZED TENSORBOARD LOGGING ---
+        current_episode_num = episode + 1
+
+        # 1. Log core profit and agent metrics
+        writer.add_scalar('Profit/Average_Profit_100_Episodes', avg_score, current_episode_num)
+        writer.add_scalar('Profit/Episode_Profit', outer_reward, current_episode_num)
+        writer.add_scalar('DDQN/Epsilon', ddqn_agent.epsilon, current_episode_num)
+        writer.add_scalar('DDQN/UAVs_Chosen', num_uavs, current_episode_num)
+
+        # 2. Log RL loss values
+        writer.add_scalar('Loss/DDQN_Critic_Loss', ddqn_loss, current_episode_num)
+        if episode_maddpg_critic_losses:
+            writer.add_scalar('Loss/MADDPG_Avg_Critic_Loss', np.mean(episode_maddpg_critic_losses), current_episode_num)
+            writer.add_scalar('Loss/MADDPG_Avg_Actor_Loss', np.mean(episode_maddpg_actor_losses), current_episode_num)
+
+        # 3. Log detailed environment statistics
+        episode_stats = env.get_episode_statistics()
+        if episode_stats: # Check if stats are available
+            for key, value in episode_stats.items():
+                # Replace "SUMO/" with "Sim/" for clarity in the non-SUMO version
+                key = key.replace("SUMO/", "Sim/")
+                writer.add_scalar(key, value, current_episode_num)
+
+        # 4. Log latency from the outer state
+        avg_latency = next_outer_state[4]
+        writer.add_scalar('Tasks/average_latency', avg_latency, current_episode_num)
+        # --- END OF LOGGING BLOCK ---
 
         elapsed_time = time.time() - start_time
         avg_time_per_episode = elapsed_time / (episode + 1)
@@ -173,23 +190,15 @@ def run_training():
 
         logger.info("========== Finished Episode %d ==========\n", episode + 1)
 
-    # Final cleanup after the training loop finishes
-    if visualizer is not None:
-        visualizer.close()
-
     writer.close()
     total_training_time = str(datetime.timedelta(seconds=int(time.time() - start_time)))
     logger.info("--- Training Finished in %s ---", total_training_time)
     print(f"\n--- Training Finished in {total_training_time} ---")
 
-    # --- Save the final trained models ---
     logger.info("--- Saving trained models ---")
     print("--- Saving trained models ---")
     ddqn_agent.save(MODEL_SAVE_PATH)
 
-    # The MADDPG controller is ephemeral and changes based on `num_uavs`.
-    # A robust approach would be to train and save a separate MADDPG model for each possible `num_uavs`.
-    # For simplicity, we save the controller from the very last episode as a representative sample.
     if maddpg_controller is not None:
         maddpg_save_path = os.path.join(MODEL_SAVE_PATH, f"maddpg_{maddpg_controller.num_agents}_agents")
         maddpg_controller.save(maddpg_save_path)

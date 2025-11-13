@@ -8,7 +8,7 @@ class instances ('self') as arguments.
 """
 import logging
 import math
-from collections import deque
+from collections import deque, Counter
 
 import numpy as np
 from numba import jit, njit
@@ -62,6 +62,10 @@ class VECNEnvironment:
         self.width, self.height, self.vehicles, self.uavs, self.ccc = AREA_WIDTH, AREA_HEIGHT, [], [], CloudComputingCenter()
         self.time_step, self.total_tasks_in_step, self.completed_tasks_in_step = 0, 0, 0
 
+        self.local_offload_count = 0
+        self.relay_offload_count = 0
+        self.cloud_offload_count = 0
+
     def _initialize_vehicle_positions_with_hotspots(self, num_vehicles, num_hotspots, hotspot_radius, hotspot_ratio):
         """
         Initializes vehicle positions with a number of hotspots (dense areas)
@@ -106,6 +110,7 @@ class VECNEnvironment:
             vehicle.position = np.append(pos_2d, 0)
             self.vehicles.append(vehicle)
             vehicle_id_counter += 1
+
     # ... (rest of the class methods are unchanged) ...
 
     def reset(self, num_uavs=0, num_vehicles=NUM_VEHICLES):
@@ -114,6 +119,10 @@ class VECNEnvironment:
         """
         logger.info("Resetting environment with %d UAVs and %d vehicles.", num_uavs, num_vehicles)
         self.time_step = 0
+
+        self.local_offload_count = 0
+        self.relay_offload_count = 0
+        self.cloud_offload_count = 0
 
         # --- SCENARIO SELECTION LOGIC ---
         # Randomly choose a scenario for this episode based on the weights in config
@@ -161,7 +170,7 @@ class VECNEnvironment:
 
         # Initialize UAVs and place them at the identified centroids
         self.uavs = [UAV(i) for i in range(num_uavs)]
-        if self.uavs and len(centroids) > 0: # Check length of centroids instead of .any() for robustness
+        if self.uavs and len(centroids) > 0:  # Check length of centroids instead of .any() for robustness
             for i, uav in enumerate(self.uavs):
                 centroid_to_assign = centroids[i % len(centroids)]
                 offset = (np.random.rand(2) * 2 - 1) * 100
@@ -724,6 +733,12 @@ class VECNEnvironment:
         task_size_mbit = task.data_size_bits / 1e6
         vehicle = next(v for v in self.vehicles if v.id == task.owner_id)
 
+        if destination == 'LOCAL_UAV':
+            self.local_offload_count += 1
+        elif destination == 'RELAY_UAV':
+            self.relay_offload_count += 1
+        elif destination == 'CLOUD':
+            self.cloud_offload_count += 1
         # Common first step: Upload from vehicle to entry UAV
         datarate_to_entry = self.calculate_datarate_user_to_uav(vehicle, entry_uav)
         raw_upload_seconds = task_size_mbit / (datarate_to_entry + 1e-9)
@@ -767,3 +782,51 @@ class VECNEnvironment:
         # Simplified energy cost - for now, just apply to the entry UAV
         cost_entry, _ = self._calculate_task_energy_cost(task, 'local_uav', entry_uav)  # Approximation is fine
         entry_uav.consume_energy(cost_entry)
+
+    def get_episode_statistics(self):
+        """
+        Calculates and returns a dictionary of detailed statistics for the completed episode.
+        (Adapted for the Python-only environment where self.vehicles is a list)
+        """
+        if not self.vehicles:
+            return {}  # Return empty dict if no vehicles
+
+        # --- Task Statistics ---
+        # Note: Iterating directly over self.vehicles because it's a list here
+        all_tasks = [task for v in self.vehicles for task in v.tasks]
+        task_status_counts = Counter(t.status for t in all_tasks)
+
+        # --- Vehicle Coverage ---
+        covered_vehicles = set()
+        if self.uavs:
+            for uav in self.uavs:
+                # Note: Iterating directly over self.vehicles
+                for v in self.vehicles:
+                    if self._get_distance_obj(uav, v) <= UAV_COMMUNICATION_RANGE:
+                        covered_vehicles.add(v.id)
+        coverage_ratio = len(covered_vehicles) / len(self.vehicles) if self.vehicles else 0
+
+        # --- UAV Fleet Statistics ---
+        if self.uavs:
+            avg_energy_pct = np.mean([u.current_energy / u.max_energy for u in self.uavs]) * 100
+            avg_compute_load_pct = (1 - np.mean([u.F_remain / u.F_total for u in self.uavs])) * 100
+            busy_uavs = sum(1 for u in self.uavs if u.status == 'BUSY')
+            uav_busy_pct = (busy_uavs / len(self.uavs)) * 100
+        else:
+            avg_energy_pct, avg_compute_load_pct, uav_busy_pct = 0, 0, 0
+
+        stats = {
+            'SUMO/active_vehicles': len(self.vehicles),  # Renaming to "active_vehicles" for consistency
+            'SUMO/coverage_ratio': coverage_ratio,
+            'Tasks/pending': task_status_counts.get('PENDING', 0),
+            'Tasks/uploading': task_status_counts.get('UPLOADING', 0),
+            'Tasks/computing': task_status_counts.get('COMPUTING', 0),
+            'Tasks/completed_in_episode': task_status_counts.get('COMPLETED', 0),
+            'Offloading/local_uav': self.local_offload_count,
+            'Offloading/relay_uav': self.relay_offload_count,
+            'Offloading/cloud': self.cloud_offload_count,
+            'UAV/avg_energy_remaining_pct': avg_energy_pct,
+            'UAV/avg_compute_load_pct': avg_compute_load_pct,
+            'UAV/busy_pct': uav_busy_pct,
+        }
+        return stats

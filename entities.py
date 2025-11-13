@@ -83,8 +83,9 @@ class UAV:
         self.max_energy = np.random.uniform(*UAV_ENERGY_CAPACITY_JOULES)
         self.status = 'IDLE'
 
-        # --- MODIFIED: Initialize separate cache structures ---
-        self.service_cache = set()
+        num_services_to_cache = min(SERVICE_CACHE_SIZE, NUM_SERVICE_TYPES)
+        # This line uses random choice, which is what we will change:
+        self.service_cache = set(np.random.choice(range(NUM_SERVICE_TYPES), size=num_services_to_cache, replace=False))
         self.content_cache = set()
         self._precache_items()
         # --- END OF MODIFICATION ---

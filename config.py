@@ -44,7 +44,7 @@ UAV_ENERGY_CAPACITY_JOULES = (800000.0, 1000000.0)  # Range for random initializ
 
 # --- Vehicle Fleet Parameters ---
 # Physical characteristics of the ground vehicles.
-NUM_VEHICLES = 100  # The default number of vehicles in the simulation area.
+NUM_VEHICLES = 192  # The default number of vehicles in the simulation area.
 VEHICLE_MIN_SPEED = 1.5  # Minimum speed for a vehicle (meters per step).
 VEHICLE_MAX_SPEED = 3.0  # Maximum speed for a vehicle (meters per step).
 
@@ -219,3 +219,17 @@ SAVE_VISUALIZATION_IMAGES = True  # If True, saves snapshots of the simulation a
 IMAGE_SAVE_PATH = "visualization_snapshots/"  # Folder to save the snapshot images.
 EPISODES_TO_SNAPSHOT = [1, 250, 500, 750, 1000]  # Save an image on these specific episodes.
 STEPS_TO_SNAPSHOT = [1, 25, 50, 75, 100]  # Save an image at these specific steps within the target episodes.
+
+# ========================================================================================
+# I. PREDICTIVE CACHING PARAMETERS
+# Controls for the dynamic, learning-based caching system.
+# ========================================================================================
+
+# --- System Control ---
+# Master switch to enable/disable the predictive caching system during HRL training.
+USE_PREDICTIVE_CACHING = True
+
+# --- Offline Training Control (for train_cache_predictor.py) ---
+# Defines the sequence length (lookback window) for the LSTM.
+# How many past requests the LSTM looks at to predict the next one.
+PREDICTION_SEQUENCE_LENGTH = 20  # A longer sequence might capture more complex patterns.

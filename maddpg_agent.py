@@ -94,7 +94,7 @@ class MADDPGController:
         experiences from the shared replay buffer.
         """
         if len(self.memory) < MADDPG_BATCH_SIZE:
-            return
+            return None, None
 
         states, actions, rewards, next_states, dones = self.memory.sample()
 
@@ -143,6 +143,8 @@ class MADDPGController:
         for agent in self.agents: agent.optimizer_actor.step()
 
         logger.debug("MADDPG learn step: Critic Loss=%.4f, Actor Loss=%.4f", critic_loss.item(), actor_loss.item())
+
+        return critic_loss.item(), actor_loss.item()
 
     def update_targets(self):
         """Soft update all target networks (actors and critic)."""
