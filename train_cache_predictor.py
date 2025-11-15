@@ -5,14 +5,14 @@ The final trained model weights are saved to a file.
 """
 import pandas as pd
 import torch
-
+import multiprocessing as mp
 from cache_predictor import LSTMCachePredictor, train_predictor_from_df
 from config import PREDICTION_SEQUENCE_LENGTH, DEVICE
 
 # --- Configuration ---
 INPUT_DATA_FILE = "task_request_data.csv"
 OUTPUT_MODEL_FILE = "lstm_cache_predictor.pth"
-TRAINING_EPOCHS = 5  # Start with 5 epochs. You can increase this if the loss is still decreasing.
+TRAINING_EPOCHS = 5  # Start with  5 epochs. You can increase this if the loss is still decreasing.
 
 
 def main():
@@ -42,4 +42,10 @@ def main():
 
 
 if __name__ == "__main__":
+    try:
+        mp.set_start_method('spawn', force=True)
+        print("Multiprocessing start method set to 'spawn'.")
+    except RuntimeError:
+        pass
+
     main()
