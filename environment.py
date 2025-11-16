@@ -15,7 +15,8 @@ from numba import jit, njit
 from scipy.cluster.vq import kmeans
 
 from config import *
-from entities import Vehicle, UAV, CloudComputingCenter
+from demand_generator import DemandGenerator
+from entities import Vehicle, UAV, CloudComputingCenter, Task
 
 # Get a logger for this module
 logger = logging.getLogger(__name__)
@@ -57,11 +58,11 @@ def _calculate_datarate_numba(bw_hz, p_watt, pl_db, noise_const):
 
 
 class VECNEnvironment:
-    # ... (__init__, reset are unchanged) ...
     def __init__(self):
         self.width, self.height, self.vehicles, self.uavs, self.ccc = AREA_WIDTH, AREA_HEIGHT, [], [], CloudComputingCenter()
         self.time_step, self.total_tasks_in_step, self.completed_tasks_in_step = 0, 0, 0
-
+        self.request_history = deque(maxlen=200)
+        self.demand_generator = DemandGenerator()
         self.local_offload_count = 0
         self.relay_offload_count = 0
         self.cloud_offload_count = 0
@@ -123,7 +124,9 @@ class VECNEnvironment:
         self.local_offload_count = 0
         self.relay_offload_count = 0
         self.cloud_offload_count = 0
-
+        self.request_history.clear()
+        # Reset the demand generator for the new episode
+        self.demand_generator.reset()
         # --- SCENARIO SELECTION LOGIC ---
         # Randomly choose a scenario for this episode based on the weights in config
         chosen_scenario_name = np.random.choice(
@@ -160,13 +163,30 @@ class VECNEnvironment:
                             congested_vehicle_ids.add(self.vehicles[i].id)
                             break
             for v in self.vehicles:
-                if v.id in congested_vehicle_ids:
-                    v.generate_tasks(num_tasks=TASKS_PER_VEHICLE_CONGESTED)
-                else:
-                    v.generate_tasks(num_tasks=TASKS_PER_VEHICLE)
+                # Instead of v.generate_tasks(), we create tasks here
+                v.tasks = []
+                num_tasks_to_gen = TASKS_PER_VEHICLE # Or TASKS_PER_VEHICLE_CONGESTED if you use that logic
+                for i in range(num_tasks_to_gen):
+                    # Get the next request from our advanced generator
+                    service, content = self.demand_generator.generate_next_request()
+                    # Create the task with the specified types
+                    new_task = Task(f"{v.id}-{i}", v.id, service, content)
+                    v.tasks.append(new_task)
+                    # Log to history for the predictor
+                    self.request_history.append(new_task.service_type)
         else:
             for v in self.vehicles:
-                v.generate_tasks()
+                # Instead of v.generate_tasks(), we create tasks here
+                v.tasks = []
+                num_tasks_to_gen = TASKS_PER_VEHICLE # Or TASKS_PER_VEHICLE_CONGESTED if you use that logic
+                for i in range(num_tasks_to_gen):
+                    # Get the next request from our advanced generator
+                    service, content = self.demand_generator.generate_next_request()
+                    # Create the task with the specified types
+                    new_task = Task(f"{v.id}-{i}", v.id, service, content)
+                    v.tasks.append(new_task)
+                    # Log to history for the predictor
+                    self.request_history.append(new_task.service_type)
 
         # Initialize UAVs and place them at the identified centroids
         self.uavs = [UAV(i) for i in range(num_uavs)]
@@ -176,6 +196,10 @@ class VECNEnvironment:
                 offset = (np.random.rand(2) * 2 - 1) * 100
                 uav.position[0] = centroid_to_assign[0] + offset[0]
                 uav.position[1] = centroid_to_assign[1] + offset[1]
+
+        all_initial_tasks = [task for v in self.vehicles for task in v.tasks]
+        for task in all_initial_tasks:
+            self.request_history.append(task.service_type)
 
         return self.get_maddpg_states()
 
@@ -234,6 +258,10 @@ class VECNEnvironment:
 
         global_reward = np.mean(rewards) if rewards else 0
         return [global_reward * REWARD_SCALING_FACTOR] * len(self.uavs)
+
+    def get_recent_requests(self, num_requests):
+        """Returns the last N service requests from the history."""
+        return list(self.request_history)[-num_requests:]
 
     def get_maddpg_states(self):
         """

@@ -11,6 +11,7 @@ from collections import deque
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
+from cache_predictor import LSTMCachePredictor
 from config import *
 from ddqn_agent import DDQNAgent
 from environment import VECNEnvironment
@@ -84,9 +85,40 @@ def run_training():
     start_time = time.time()
     maddpg_controller = None  # Initialize to handle case where first episode has 0 UAVs
 
+    predictor = None
+    if USE_PREDICTIVE_CACHING:
+        model_path = "lstm_cache_predictor.pth"
+        try:
+            # We saved the state_dict, so we load it into the model class
+            predictor = LSTMCachePredictor().to(DEVICE)
+            predictor.load_state_dict(torch.load(model_path, map_location=DEVICE))
+            predictor.eval()  # IMPORTANT: Set model to evaluation mode
+            print(f"✅ Successfully loaded pre-trained cache predictor from '{model_path}'.")
+        except Exception as e:
+            print(f"⚠️ WARNING: Could not load predictor model: {e}. Predictive caching disabled.")
+
+    visualizer = None
+    # If it's meant to stay open, create it once at the very beginning.
+    if VISUALIZATION and VISUALIZER_STAYS_OPEN:
+        print("\nInitializing persistent visualization window...")
+        visualizer = Visualizer(env.width, env.height)
+
     for episode in range(TOTAL_EPISODES):
 
-        logger.info("========== Starting Episode %d ==========", episode + 1)
+        current_episode_num = episode + 1
+        is_snapshot_episode = current_episode_num in EPISODES_TO_SNAPSHOT
+        if VISUALIZATION and not VISUALIZER_STAYS_OPEN:
+            # If it's a snapshot episode and the window isn't open, create it.
+            if is_snapshot_episode and visualizer is None:
+                print(f"\nOpening visualization for snapshot episode {current_episode_num}...")
+                visualizer = Visualizer(env.width, env.height)
+            # If it's NOT a snapshot episode and the window IS open, close it.
+            elif not is_snapshot_episode and visualizer is not None:
+                print(f"\nClosing visualization after snapshot episode {current_episode_num - 1}.")
+                visualizer.close()
+                visualizer = None
+                logger.info("========== Starting Episode %d ==========", episode + 1)
+
         outer_state = env.get_ddqn_state()
         logger.debug("DDQN Agent received outer_state: %s", outer_state)
 
@@ -105,6 +137,22 @@ def run_training():
 
             logger.info("--- Starting Inner Loop (MADDPG) for %d steps ---", INNER_STEPS)
             for t in range(INNER_STEPS):
+
+                if visualizer:
+                    visualizer.draw(env.uavs, env.vehicles, episode + 1, t + 1)
+
+                if predictor and t > 0 and t % CACHE_UPDATE_INTERVAL == 0:
+                    recent_requests = env.get_recent_requests(PREDICTION_SEQUENCE_LENGTH)
+                    if len(recent_requests) >= PREDICTION_SEQUENCE_LENGTH:
+                        seq_tensor = torch.LongTensor([recent_requests]).to(DEVICE)
+                        with torch.no_grad():
+                            s_preds, c_preds = predictor(seq_tensor)
+
+                        top_k_s = torch.topk(s_preds, k=SERVICE_CACHE_SIZE, dim=1).indices.cpu().numpy().flatten()
+                        top_k_c = torch.topk(c_preds, k=CONTENT_CACHE_SIZE, dim=1).indices.cpu().numpy().flatten()
+
+                        for uav in env.uavs:
+                            uav.update_cache_from_prediction(top_k_s, top_k_c)
 
                 actions = maddpg_controller.select_actions(inner_states)
                 next_inner_states, rewards, done = env.step(actions)
@@ -164,7 +212,7 @@ def run_training():
 
         # 3. Log detailed environment statistics
         episode_stats = env.get_episode_statistics()
-        if episode_stats: # Check if stats are available
+        if episode_stats:  # Check if stats are available
             for key, value in episode_stats.items():
                 # Replace "SUMO/" with "Sim/" for clarity in the non-SUMO version
                 key = key.replace("SUMO/", "Sim/")
@@ -189,6 +237,9 @@ def run_training():
                 f'\rEpisode {episode + 1}/{TOTAL_EPISODES}\tAvg Score: {avg_score:.2f}\tUAVs: {num_uavs}\tETA: {eta_formatted}')
 
         logger.info("========== Finished Episode %d ==========\n", episode + 1)
+
+    if visualizer is not None:
+        visualizer.close()
 
     writer.close()
     total_training_time = str(datetime.timedelta(seconds=int(time.time() - start_time)))

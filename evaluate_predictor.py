@@ -81,7 +81,7 @@ def main():
 
     model = LSTMCachePredictor().to(DEVICE)
     try:
-        model.load_state_dict(torch.load(MODEL_FILE))
+        model.load_state_dict(torch.load(MODEL_FILE, map_location=DEVICE))
     except FileNotFoundError:
         print(f"ERROR: Model file not found at '{MODEL_FILE}'.")
         print("Please run 'train_cache_predictor.py' first.")

@@ -6,3 +6,4 @@ tqdm
 scipy
 pygame
 tensorboard
+pandas

@@ -212,7 +212,7 @@ EVAL_SCENARIO_VEHICLES = range(50, 121, 10)  # A range of vehicle counts to test
 
 # --- Visualization Settings ---
 VISUALIZATION = True  # Master switch to enable/disable Pygame visualization.
-VISUALIZER_STAYS_OPEN = True  # If False, visualizer closes after taking snapshots. If True, it stays open.
+VISUALIZER_STAYS_OPEN = False  # If False, visualizer closes after taking snapshots. If True, it stays open.
 SCREEN_WIDTH = 1500  # Width of the visualization window in pixels.
 SCREEN_HEIGHT = 800  # Height of the visualization window in pixels.
 SAVE_VISUALIZATION_IMAGES = True  # If True, saves snapshots of the simulation at specified intervals.
@@ -233,3 +233,6 @@ USE_PREDICTIVE_CACHING = True
 # Defines the sequence length (lookback window) for the LSTM.
 # How many past requests the LSTM looks at to predict the next one.
 PREDICTION_SEQUENCE_LENGTH = 20  # A longer sequence might capture more complex patterns.
+# --- Online Inference Control (for main.py) ---
+# How often (in simulation steps) the UAVs should update their caches based on new predictions.
+CACHE_UPDATE_INTERVAL = 25

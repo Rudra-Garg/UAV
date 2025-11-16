@@ -97,6 +97,8 @@ def plot_comparison(metric_name, results, scenarios, ylabel, title, filename):
 
 def main():
     print("--- Starting Enhanced Evaluation ---")
+    # Create Evaluations directory if it doesn't exist
+    os.makedirs('Evaluations', exist_ok=True)
 
     env = VECNEnvironment()
 
@@ -152,7 +154,7 @@ def main():
         scenarios=vehicle_scenarios,
         ylabel='Average System Profit',
         title='Comparison of System Profit vs. Number of Users (Fig. 5)',
-        filename='Evaluations/m1/evaluation_profit_results.png'
+        filename='Evaluations/evaluation_profit_results.png'
     )
 
     plot_comparison(
@@ -161,7 +163,7 @@ def main():
         scenarios=vehicle_scenarios,
         ylabel='Average Number of Processed Tasks',
         title='Comparison of Processed Tasks vs. Number of Users (Fig. 6)',
-        filename='Evaluations/m1/evaluation_tasks_results.png'
+        filename='Evaluations/evaluation_tasks_results.png'
     )
 
     plot_comparison(
@@ -170,7 +172,7 @@ def main():
         scenarios=vehicle_scenarios,
         ylabel='Average Task Latency (steps)',
         title='Comparison of Task Latency vs. Number of Users (Fig. 7)',
-        filename='Evaluations/m1/evaluation_latency_results.png'
+        filename='Evaluations/evaluation_latency_results.png'
     )
 
 

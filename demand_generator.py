@@ -1,12 +1,10 @@
-# create_task_dataset.py
+# demand_generator.py
 """
-Advanced task dataset generator with realistic caching patterns.
-This script's only job is to generate the data and save it.
-Analysis is handled by a separate script: analyze_dataset.py
+Encapsulates the advanced, stateful logic for generating realistic
+sequences of task requests, including sessions, user types, and time patterns.
 """
+
 import numpy as np
-import pandas as pd
-from tqdm import tqdm
 
 from config import (
     POPULARITY_ZIPF_ALPHA,
@@ -130,76 +128,71 @@ def sample_zipf_content():
     return (np.random.zipf(POPULARITY_ZIPF_ALPHA, 1)[0] - 1) % NUM_CONTENT_TYPES
 
 
-def generate_advanced_dataset():
-    """Generates and saves the dataset with advanced realistic patterns."""
-    print("--- Advanced Data Generation with Realistic Caching Patterns ---")
-    # ... (print enabled features as before) ...
+# --- Main Orchestrator Class ---
+class DemandGenerator:
+    def __init__(self):
+        # Initialize all the sub-models
+        self.transition_model = ServiceTransitionModel(NUM_SERVICE_TYPES)
+        self.time_model = TimeOfDayModel(NUM_SERVICE_TYPES)
+        self.user_model = UserTypeModel()
+        self.content_model = ContentServiceCorrelation(NUM_SERVICE_TYPES, NUM_CONTENT_TYPES)
 
-    # Initialize models
-    transition_model = ServiceTransitionModel(NUM_SERVICE_TYPES) if USE_SERVICE_CHAINS else None
-    time_model = TimeOfDayModel(NUM_SERVICE_TYPES) if USE_TIME_PATTERNS else None
-    user_model = UserTypeModel() if USE_USER_TYPES else None
-    content_model = ContentServiceCorrelation(NUM_SERVICE_TYPES, NUM_CONTENT_TYPES) if USE_CONTENT_CORRELATION else None
+        # Session state
+        self.current_service = sample_zipf_service()
+        self.session_remaining = self.user_model.get_session_length()
 
-    requests_data = []
-    current_service = sample_zipf_service()
-    locality_prob = TEMPORAL_LOCALITY_PROB
-    session_remaining = max(1, int(np.random.normal(SESSION_LENGTH_MEAN, SESSION_LENGTH_STD)))
+        # Burst state
+        self.in_burst = False
+        self.burst_remaining = 0
 
-    in_burst = False
-    burst_remaining = 0
+        self.requests_generated = 0
 
-    for i in tqdm(range(NUM_REQUESTS_TO_GENERATE), desc="Generating Requests"):
-        if user_model:
-            user_model.maybe_switch_user()
-            locality_prob = user_model.get_locality_prob()
+    def generate_next_request(self):
+        """Generates the next (service, content) pair based on the internal state."""
+        self.requests_generated += 1
 
-        if time_model and i % 1000 == 0:
-            time_model.advance_time(1000)
+        # Update stateful models
+        self.user_model.maybe_switch_user()
+        if self.requests_generated % 1000 == 0:
+            self.time_model.advance_time(1000)
 
-        # Generation logic for service_type
-        if in_burst and burst_remaining > 0:
-            service_type = current_service
-            burst_remaining -= 1
-        elif not in_burst and np.random.rand() < BURST_PROBABILITY / 100:
-            in_burst = True
-            burst_remaining = np.random.randint(15, 30)
-            service_type = current_service
+        # Determine the next service type
+        locality_prob = self.user_model.get_locality_prob()
+
+        if self.in_burst and self.burst_remaining > 0:
+            service_type = self.current_service
+            self.burst_remaining -= 1
+        elif not self.in_burst and np.random.rand() < (BURST_PROBABILITY / 100):
+            self.in_burst = True
+            self.burst_remaining = np.random.randint(15, 30)
+            service_type = self.current_service
         else:
-            in_burst = False
-            session_remaining -= 1
-            if session_remaining > 0 and np.random.rand() < locality_prob:
-                service_type = current_service
+            self.in_burst = False
+            self.session_remaining -= 1
+            if self.session_remaining > 0 and np.random.rand() < locality_prob:
+                service_type = self.current_service
             else:
-                if transition_model and np.random.rand() < 0.6:
-                    new_service = transition_model.next_service(current_service)
-                else:
+                new_service = self.transition_model.next_service(self.current_service)
+                boost = self.time_model.get_service_boost(new_service)
+                if boost < 2.0 and np.random.rand() > 0.5:
                     new_service = sample_zipf_service()
 
-                if time_model:
-                    boost = time_model.get_service_boost(new_service)
-                    if boost < 2.0 and np.random.rand() > 0.5:
-                        new_service = sample_zipf_service()
+                self.current_service = new_service
+                service_type = self.current_service
+                self.session_remaining = self.user_model.get_session_length()
 
-                current_service = new_service
-                service_type = current_service
-
-                session_remaining = user_model.get_session_length() if user_model else max(1, int(np.random.normal(
-                    SESSION_LENGTH_MEAN, SESSION_LENGTH_STD)))
-
-        # Generation logic for content_type
+        # Determine the content type
         content_type = None
         if np.random.rand() < 0.5:
-            content_type = content_model.sample_content_for_service(
-                service_type) if content_model else sample_zipf_content()
+            content_type = self.content_model.sample_content_for_service(service_type)
 
-        requests_data.append({'service': service_type, 'content': content_type})
+        return service_type, content_type
 
-    print("\nGeneration complete. Saving to CSV...")
-    df = pd.DataFrame(requests_data)
-    df.to_csv(OUTPUT_FILENAME, index=False)
-    print(f"\n✅ Dataset with {len(df):,} records saved to '{OUTPUT_FILENAME}'")
-
-
-if __name__ == "__main__":
-    generate_advanced_dataset()
+    def reset(self):
+        """Resets the generator's state for a new episode."""
+        self.current_service = sample_zipf_service()
+        self.session_remaining = self.user_model.get_session_length()
+        self.in_burst = False
+        self.burst_remaining = 0
+        self.requests_generated = 0
+        self.time_model.current_hour = np.random.randint(0, 24)  # Start at a random time of day

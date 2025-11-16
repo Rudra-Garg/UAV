@@ -13,19 +13,14 @@ from config import *
 class Task:
     """Represents a computational task with a multi-stage lifecycle."""
 
-    def __init__(self, task_id, owner_vehicle_id):
+    def __init__(self, task_id, owner_vehicle_id, service_type=None, content_type=None):
         self.id = task_id
         self.owner_id = owner_vehicle_id
         self.data_size_bits = np.random.uniform(*TASK_DATA_SIZE_RANGE) * 1e6
 
         # This ensures generated tasks align with what UAVs are likely to have cached.
-        self.service_type = (np.random.zipf(POPULARITY_ZIPF_ALPHA, 1)[0] - 1) % NUM_SERVICE_TYPES
-
-        # Tasks now have a chance to require a specific piece of content as well
-        if np.random.rand() < 0.5:
-            self.content_type = (np.random.zipf(POPULARITY_ZIPF_ALPHA, 1)[0] - 1) % NUM_CONTENT_TYPES
-        else:
-            self.content_type = None
+        self.service_type = service_type
+        self.content_type = content_type
 
         self.cpu_cycles_req = self.data_size_bits * TASK_CPU_CYCLES_PER_BIT
         self.latency_constraint = np.random.uniform(*LATENCY_CONSTRAINT_RANGE)
@@ -84,10 +79,9 @@ class UAV:
         self.status = 'IDLE'
 
         num_services_to_cache = min(SERVICE_CACHE_SIZE, NUM_SERVICE_TYPES)
-        # This line uses random choice, which is what we will change:
-        self.service_cache = set(np.random.choice(range(NUM_SERVICE_TYPES), size=num_services_to_cache, replace=False))
+        self.service_cache = set()
         self.content_cache = set()
-        self._precache_items()
+        self._precache_items()  # Let this method handle all initialization
         # --- END OF MODIFICATION ---
 
         # State variables reset each episode
@@ -115,6 +109,14 @@ class UAV:
         if content_type is None:
             return True
         return content_type in self.content_cache
+
+    def update_cache_from_prediction(self, top_k_services, top_k_content):
+        """
+        Dynamically updates the cache based on predictions from the LSTM model.
+        This is a hard replacement of the existing cache.
+        """
+        self.service_cache = set(top_k_services)
+        self.content_cache = set(top_k_content)
 
     def move(self, action):
         self.position += action
