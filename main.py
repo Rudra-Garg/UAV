@@ -87,15 +87,13 @@ def run_training():
 
     predictor = None
     if USE_PREDICTIVE_CACHING:
-        model_path = "lstm_cache_predictor.pth"
         try:
-            # We saved the state_dict, so we load it into the model class
-            predictor = LSTMCachePredictor().to(DEVICE)
-            predictor.load_state_dict(torch.load(model_path, map_location=DEVICE))
-            predictor.eval()  # IMPORTANT: Set model to evaluation mode
-            print(f"✅ Successfully loaded pre-trained cache predictor from '{model_path}'.")
+            predictor = LSTMCachePredictor().to(DEVICE) # Architecture updated
+            predictor.load_state_dict(torch.load("lstm_cache_predictor.pth", map_location=DEVICE))
+            predictor.eval()
+            print("✅ Loaded Context-Aware Predictor.")
         except Exception as e:
-            print(f"⚠️ WARNING: Could not load predictor model: {e}. Predictive caching disabled.")
+            print(f"⚠️ Load failed: {e}")
 
     visualizer = None
     # If it's meant to stay open, create it once at the very beginning.
@@ -142,14 +140,30 @@ def run_training():
                     visualizer.draw(env.uavs, env.vehicles, episode + 1, t + 1)
 
                 if predictor and t > 0 and t % CACHE_UPDATE_INTERVAL == 0:
-                    recent_requests = env.get_recent_requests(PREDICTION_SEQUENCE_LENGTH)
-                    if len(recent_requests) >= PREDICTION_SEQUENCE_LENGTH:
-                        seq_tensor = torch.LongTensor([recent_requests]).to(DEVICE)
-                        with torch.no_grad():
-                            s_preds, c_preds = predictor(seq_tensor)
+                    # 1. Get History (Now returns tuples)
+                    recent_data = env.get_recent_requests(PREDICTION_SEQUENCE_LENGTH)
 
-                        top_k_s = torch.topk(s_preds, k=SERVICE_CACHE_SIZE, dim=1).indices.cpu().numpy().flatten()
-                        top_k_c = torch.topk(c_preds, k=CONTENT_CACHE_SIZE, dim=1).indices.cpu().numpy().flatten()
+                    if len(recent_data) >= PREDICTION_SEQUENCE_LENGTH:
+                        # 2. Unpack Services and Zones
+                        s_seq = [x[0] for x in recent_data]
+                        z_seq = [x[1] for x in recent_data]
+
+                        # 3. Create Tensors
+                        s_tensor = torch.LongTensor([s_seq]).to(DEVICE)
+                        z_tensor = torch.LongTensor([z_seq]).to(DEVICE)
+
+                        with torch.no_grad():
+                            # 4. Pass BOTH to model
+                            s_preds, c_preds = predictor(s_tensor, z_tensor)
+
+                        # 5. Get Probabilities & Top-K
+                        # Using probabilities is better than raw scores for confidence
+                        s_probs = torch.softmax(s_preds, dim=1).cpu().numpy().flatten()
+                        c_probs = torch.softmax(c_preds, dim=1).cpu().numpy().flatten()
+
+                        # Get indices of highest probability items
+                        top_k_s = s_probs.argsort()[-SERVICE_CACHE_SIZE:][::-1]
+                        top_k_c = c_probs.argsort()[-CONTENT_CACHE_SIZE:][::-1]
 
                         for uav in env.uavs:
                             uav.update_cache_from_prediction(top_k_s, top_k_c)

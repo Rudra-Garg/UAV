@@ -9,7 +9,7 @@ from tqdm import tqdm
 import numpy as np
 
 from cache_predictor import LSTMCachePredictor
-from config import PREDICTION_SEQUENCE_LENGTH, DEVICE, NUM_SERVICE_TYPES
+from config import PREDICTION_SEQUENCE_LENGTH, DEVICE, NUM_SERVICE_TYPES, NUM_ZONES
 
 # --- Configuration ---
 MODEL_FILE = "lstm_cache_predictor.pth"
@@ -27,41 +27,64 @@ def calculate_accuracy(model, df, sequence_length):
     split_index = int(len(df) * (1 - TEST_SET_SIZE))
     test_df = df.iloc[split_index:]
 
-    sequences, labels = [], []
+    sequences_s, sequences_z, labels = [], [], []
     service_col = test_df['service'].values
-    for i in range(len(test_df) - sequence_length):
-        sequences.append(service_col[i:i + sequence_length])
+
+    # Check if zone exists (backward compatibility)
+    if 'zone' in test_df.columns:
+        zone_col = test_df['zone'].values
+    else:
+        print("⚠️ Warning: 'zone' column missing. Filling with zeros.")
+        zone_col = np.zeros_like(service_col)
+
+    print(f"Generating test sequences from {len(test_df):,} records...")
+
+    # Create sequences (non-vectorized for clarity/safety on test set)
+    # Note: For very large test sets, this might be slow, but safe for 400k records.
+    for i in tqdm(range(len(test_df) - sequence_length), desc="Building Test Set"):
+        sequences_s.append(service_col[i:i + sequence_length])
+        sequences_z.append(zone_col[i:i + sequence_length])
         labels.append(service_col[i + sequence_length])
 
-    X_test = torch.LongTensor(np.array(sequences))
-    y_test = torch.LongTensor(labels)
+    X_test_s = torch.LongTensor(np.array(sequences_s))
+    X_test_z = torch.LongTensor(np.array(sequences_z))
+    y_test = torch.LongTensor(np.array(labels))
 
     top1_correct = 0
     top3_correct = 0
     top5_correct = 0
     total = 0
 
+    batch_size = 1024
+
     with torch.no_grad():
         # Evaluate in batches to avoid running out of memory
-        for i in tqdm(range(0, len(X_test), 512), desc="Evaluating Accuracy"):
-            seq_batch = X_test[i:i + 512].to(DEVICE)
-            label_batch = y_test[i:i + 512]
+        num_batches = (len(X_test_s) + batch_size - 1) // batch_size
 
-            service_preds, _ = model(seq_batch)
+        for i in tqdm(range(0, len(X_test_s), batch_size), total=num_batches, desc="Evaluating"):
+            seq_batch_s = X_test_s[i:i + batch_size].to(DEVICE)
+            seq_batch_z = X_test_z[i:i + batch_size].to(DEVICE)
+            label_batch = y_test[i:i + batch_size].to(DEVICE)
+
+            # Pass BOTH inputs to the model
+            service_preds, _ = model(seq_batch_s, seq_batch_z)
 
             # --- Top-1 Accuracy ---
-            _, predicted_top1 = torch.max(service_preds.cpu(), 1)
+            _, predicted_top1 = torch.max(service_preds, 1)
             top1_correct += (predicted_top1 == label_batch).sum().item()
 
             # --- Top-K Accuracy ---
-            _, predicted_topk = torch.topk(service_preds.cpu(), k=5, dim=1)
-            # Check if the true label is within the top 3 or top 5 predictions
-            for j in range(len(label_batch)):
-                true_label = label_batch[j]
-                if true_label in predicted_topk[j, :3]:
-                    top3_correct += 1
-                if true_label in predicted_topk[j, :5]:
-                    top5_correct += 1
+            # Get top 5 indices: [batch_size, 5]
+            _, predicted_topk = torch.topk(service_preds, k=5, dim=1)
+
+            # Expand labels to [batch_size, 1] for broadcasting
+            label_batch_expanded = label_batch.view(-1, 1)
+
+            # Check matches
+            matches = (predicted_topk == label_batch_expanded)  # [batch, 5] boolean
+
+            top3_correct += matches[:, :3].any(dim=1).sum().item()
+            top5_correct += matches[:, :5].any(dim=1).sum().item()
 
             total += len(label_batch)
 
@@ -79,12 +102,22 @@ def main():
         print(f"ERROR: Data file not found at '{DATA_FILE}'.")
         return
 
-    model = LSTMCachePredictor().to(DEVICE)
+    # Initialize model with new architecture parameters
+    model = LSTMCachePredictor(
+        embedding_dim=64,
+        zone_emb_dim=16,
+        lstm_hidden_dim=128
+    ).to(DEVICE)
+
     try:
         model.load_state_dict(torch.load(MODEL_FILE, map_location=DEVICE))
+        print(f"Loaded model from {MODEL_FILE}")
     except FileNotFoundError:
         print(f"ERROR: Model file not found at '{MODEL_FILE}'.")
         print("Please run 'train_cache_predictor.py' first.")
+        return
+    except RuntimeError as e:
+        print(f"ERROR: Model architecture mismatch. {e}")
         return
 
     calculate_accuracy(model, df, PREDICTION_SEQUENCE_LENGTH)

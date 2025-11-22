@@ -1,14 +1,12 @@
 # cache_predictor.py
 import multiprocessing as mp
 import os
-
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
-
 from config import NUM_SERVICE_TYPES, NUM_CONTENT_TYPES, NUM_ZONES, DEVICE
 
 
@@ -71,7 +69,7 @@ def _create_sequences_chunk(args):
     return seq_s, seq_z, labels
 
 
-def train_predictor_from_df(model, df, sequence_length=10, epochs=10):
+def train_predictor_from_df(model, df, sequence_length=10, epochs=10, batch_size=512):
     """Trains the predictor using both Service and Zone data."""
 
     if len(df) < sequence_length * 10:
@@ -109,7 +107,7 @@ def train_predictor_from_df(model, df, sequence_length=10, epochs=10):
     dataset = TensorDataset(X_s, X_z, y)
 
     num_workers = min(os.cpu_count(), 4)
-    loader = DataLoader(dataset, batch_size=512, shuffle=True, num_workers=num_workers, pin_memory=True)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
 
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
