@@ -163,16 +163,17 @@ class VECNEnvironment:
                             congested_vehicle_ids.add(self.vehicles[i].id)
                             break
             for v in self.vehicles:
-                # Instead of v.generate_tasks(), we create tasks here
                 v.tasks = []
-                num_tasks_to_gen = TASKS_PER_VEHICLE # Or TASKS_PER_VEHICLE_CONGESTED if you use that logic
+                num_tasks_to_gen = TASKS_PER_VEHICLE
                 for i in range(num_tasks_to_gen):
-                    # Get the next request from our advanced generator
-                    service, content = self.demand_generator.generate_next_request()
-                    # Create the task with the specified types
+                    # UPDATED CALL: Pass time_step (use 0 for init) and v.position
+                    service, content = self.demand_generator.generate_next_request(self.time_step, v.position)
+
                     new_task = Task(f"{v.id}-{i}", v.id, service, content)
                     v.tasks.append(new_task)
-                    # Log to history for the predictor
+
+                    # Important: Log the LOCATION along with the request for the LSTM?
+                    # For now, the standard LSTM just sees the sequence of services.
                     self.request_history.append(new_task.service_type)
         else:
             for v in self.vehicles:

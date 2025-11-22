@@ -1,50 +1,92 @@
 """
 Phase 2: Offline Training
-Loads the generated task request data and trains the LSTM Cache Predictor model.
-The final trained model weights are saved to a file.
+Loads the generated task request data (based on Azure Traces) and trains
+the LSTM Cache Predictor model.
 """
+import multiprocessing as mp
+import os
+
 import pandas as pd
 import torch
-import multiprocessing as mp
+
 from cache_predictor import LSTMCachePredictor, train_predictor_from_df
 from config import PREDICTION_SEQUENCE_LENGTH, DEVICE
 
 # --- Configuration ---
 INPUT_DATA_FILE = "task_request_data.csv"
 OUTPUT_MODEL_FILE = "lstm_cache_predictor.pth"
-TRAINING_EPOCHS = 5  # Start with  5 epochs. You can increase this if the loss is still decreasing.
+
+# Azure data is complex (bursty + sparse).
+# It takes more epochs to converge than synthetic data.
+TRAINING_EPOCHS = 15
+BATCH_SIZE = 1024  # Increased batch size for faster processing of large trace data
+
+
+def validate_dataset(df):
+    """Sanity checks to ensure the Azure data generation worked correctly."""
+    required_cols = ['service', 'content']
+
+    # 1. Check Columns
+    if not all(col in df.columns for col in required_cols):
+        print(f"❌ ERROR: CSV missing columns. Found {df.columns}, expected {required_cols}")
+        return False
+
+    # 2. Check for Empty Data
+    if len(df) < PREDICTION_SEQUENCE_LENGTH * 2:
+        print(f"❌ ERROR: Dataset too small ({len(df)} rows). Run generate_task_data.py with more requests.")
+        return False
+
+    # 3. Check for Diversity (If Variance is 0, something broke in the generator)
+    if df['service'].nunique() < 2:
+        print("❌ ERROR: 'service' column has no diversity (only 1 type found). Generator logic failed.")
+        return False
+
+    return True
 
 
 def main():
     print(f"--- Phase 2: Starting Offline Model Training on {DEVICE} ---")
+    print(f"    Dataset: {INPUT_DATA_FILE}")
+    print(f"    Epochs:  {TRAINING_EPOCHS}")
 
     # 1. Load the dataset
-    try:
-        df = pd.read_csv(INPUT_DATA_FILE)
-    except FileNotFoundError:
-        print(f"ERROR: Data file not found at '{INPUT_DATA_FILE}'.")
-        print("Please run 'create_task_dataset.py' first.")
+    if not os.path.exists(INPUT_DATA_FILE):
+        print(f"❌ ERROR: Data file '{INPUT_DATA_FILE}' not found.")
+        print("   Please run 'generate_task_data.py' (with the new Azure logic) first.")
         return
 
-    print(f"Loaded {len(df):,} records from '{INPUT_DATA_FILE}'.")
+    df = pd.read_csv(INPUT_DATA_FILE)
+    print(f"-> Loaded {len(df):,} records.")
 
-    # 2. Initialize the model
+    # 2. Validate Data Quality
+    if not validate_dataset(df):
+        return
+
+    # 3. Initialize the model
+    print("-> Initializing LSTM Model...")
     predictor_model = LSTMCachePredictor().to(DEVICE)
 
-    # 3. Train the model using the function from cache_predictor.py
-    train_predictor_from_df(predictor_model, df,
-                            sequence_length=PREDICTION_SEQUENCE_LENGTH,
-                            epochs=TRAINING_EPOCHS)
+    # 4. Train the model
+    # Note: The cache_predictor.py logic will handle the service prediction loss.
+    # Since Azure data has high temporal correlation, we expect the loss to drop significantly.
+    train_predictor_from_df(
+        predictor_model,
+        df,
+        sequence_length=PREDICTION_SEQUENCE_LENGTH,
+        epochs=TRAINING_EPOCHS,
+        batch_size=BATCH_SIZE
+    )
 
-    # 4. Save the trained model's state dictionary
+    # 5. Save the trained model
     torch.save(predictor_model.state_dict(), OUTPUT_MODEL_FILE)
-    print(f"\n✅ Model training complete. Weights saved to '{OUTPUT_MODEL_FILE}'.")
+    print(f"\n✅ Model training complete.")
+    print(f"✅ Weights saved to '{OUTPUT_MODEL_FILE}'.")
 
 
 if __name__ == "__main__":
+    # Essential for PyTorch DataLoader num_workers > 0 on Windows/Linux
     try:
         mp.set_start_method('spawn', force=True)
-        print("Multiprocessing start method set to 'spawn'.")
     except RuntimeError:
         pass
 

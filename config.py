@@ -235,4 +235,6 @@ USE_PREDICTIVE_CACHING = True
 PREDICTION_SEQUENCE_LENGTH = 20  # A longer sequence might capture more complex patterns.
 # --- Online Inference Control (for main.py) ---
 # How often (in simulation steps) the UAVs should update their caches based on new predictions.
-CACHE_UPDATE_INTERVAL = 25
+CACHE_UPDATE_INTERVAL = 20
+
+NUM_ZONES = 4
