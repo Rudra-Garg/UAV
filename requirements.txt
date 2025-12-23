@@ -7,3 +7,4 @@ scipy
 pygame
 tensorboard
 pandas
+traci
