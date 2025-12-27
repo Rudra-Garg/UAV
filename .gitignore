@@ -168,3 +168,5 @@ osm_data/
 sumo_scenario/
 
 repo_*
+*.zip
+tree.txt

@@ -1,17 +1,16 @@
-# generate_task_data.py
 import os
+import sys
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from config import NUM_SERVICE_TYPES, NUM_CONTENT_TYPES, NUM_ZONES
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from config import *
 
 # --- Configuration ---
 NUM_REQUESTS_TO_GENERATE = 2000000
-OUTPUT_FILENAME = "../data/task_request_data.csv"
-AZURE_MATRIX_FILE = "../data/azure_workload_matrix.npy"
-AZURE_META_FILE = "../data/azure_service_meta.csv"
+OUTPUT_FILENAME = TASK_REQUEST_DATA_FILE  # Imported from config
 
 # --- NEW: Define Workflows (Sequential dependencies) ---
 # Format: { Trigger_Service_ID: [Next_Possible_Service_A, Next_Possible_Service_B] }

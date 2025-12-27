@@ -4,7 +4,7 @@ import random
 import numpy as np
 
 from config import *
-from entities import Vehicle
+from simulation.entities import Vehicle
 
 # Conditional import for SUMO
 if SIMULATION_MODE == 'SUMO':
@@ -43,8 +43,7 @@ class PhysicsConnector:
         if SIMULATION_MODE == 'SUMO':
             self._reset_sumo()
             # In SUMO, vehicles are spawned by the .rou.xml files loaded by TraCI
-            # We just need to sync the python objects to what SUMO creates.
-            # Initial step to load network
+            # Initial step to load network and spawn initial vehicles
             traci.simulationStep()
             vehicles = self._sync_sumo_vehicles({})
 
@@ -73,6 +72,47 @@ class PhysicsConnector:
         self.sumo_cmd[2] = config_path
         logger.info(f"Starting SUMO: {city}")
         traci.start(self.sumo_cmd)
+
+        # --- DYNAMICALLY INJECT UAV DEFINITIONS (SAFEGUARDED) ---
+
+        # 1. Check/Create UAV_TYPE
+        try:
+            if "UAV_TYPE" not in traci.vehicletype.getIDList():
+                # Try copying from a standard type if it exists, else create fresh
+                existing_types = traci.vehicletype.getIDList()
+                if "DEFAULT_VEHTYPE" in existing_types:
+                    traci.vehicletype.copy("DEFAULT_VEHTYPE", "UAV_TYPE")
+                elif len(existing_types) > 0:
+                    traci.vehicletype.copy(existing_types[0], "UAV_TYPE")
+                else:
+                    # Fallback creation (rarely needed if .add.xml loaded)
+                    # Note: add() requires complex params, copy is safer.
+                    # If this fails, we assume .add.xml handled it.
+                    pass
+
+                # Apply UAV attributes
+                traci.vehicletype.setColor("UAV_TYPE", (0, 255, 0, 255))
+                traci.vehicletype.setLength("UAV_TYPE", 1.0)
+                traci.vehicletype.setShapeClass("UAV_TYPE", "aircraft")
+                traci.vehicletype.setMinGap("UAV_TYPE", 0)
+                traci.vehicletype.setSpeedMode("UAV_TYPE", 0)  # Disable physics checks
+        except traci.exceptions.TraCIException:
+            # Type likely defined in .add.xml
+            pass
+
+        # 2. Check/Create dummy_route
+        try:
+            if "dummy_route" not in traci.route.getIDList():
+                edge_list = traci.edge.getIDList()
+                # Filter internal edges (starting with :)
+                valid_edges = [e for e in edge_list if not e.startswith(":")]
+                if valid_edges:
+                    traci.route.add("dummy_route", [valid_edges[0]])
+                else:
+                    logger.error("No valid edges found in SUMO network to create UAV route!")
+        except traci.exceptions.TraCIException:
+            # Route likely defined in .add.xml
+            pass
 
     def _initialize_python_vehicles(self, num_vehicles):
         # Choose scenario logic for initial distribution
@@ -103,30 +143,27 @@ class PhysicsConnector:
         """Advances physics by one step."""
 
         if SIMULATION_MODE == 'SUMO':
-            # 1. Move UAVs (Visual only in SUMO)
+            # 1. Move UAVs (they should already exist from reset)
             for uav in uavs:
                 uav_id = f"uav_{uav.id}"
-                # Ensure UAV exists in SUMO for visualization
                 try:
                     traci.vehicle.moveToXY(uav_id, "", -1, uav.position[0], uav.position[1], keepRoute=2)
-                except traci.exceptions.TraCIException:
-                    # Add UAV if missing
-                    try:
-                        traci.vehicle.add(uav_id, "dummy_route", typeID="UAV_TYPE")
-                        traci.vehicle.setColor(uav_id, (0, 255, 0, 255))
-                    except:
-                        pass
+                except traci.exceptions.TraCIException as e:
+                    # If it still doesn't exist (shouldn't happen), log and skip
+                    logger.warning(f"UAV {uav_id} not found in SUMO, skipping: {e}")
 
             # 2. Step SUMO
-            traci.simulationStep()
+            try:
+                traci.simulationStep()
+            except traci.exceptions.FatalTraCIError:
+                logger.error("SUMO simulation crashed or closed unexpectedly.")
+                return vehicles
 
-            # 3. Sync Vehicles (Remove departed, add new, update positions)
+            # 3. Sync Vehicles
             return self._sync_sumo_vehicles(vehicles)
 
         else:
             # Python Kinematic Mode
-            # 1. Move UAVs (State update is handled by UAV class, just need to ensure bounds)
-            # 2. Move Vehicles
             for v in vehicles.values():
                 v.move()
             return vehicles
@@ -150,24 +187,44 @@ class PhysicsConnector:
 
         # 2. Update existing & Add new
         for vid in vehicle_ids:
-            pos = traci.vehicle.getPosition(vid)
-
-            if vid not in vehicle_dict:
-                # New vehicle found in SUMO
-                new_v = Vehicle(vid)
-                new_v.position = np.array([pos[0], pos[1], 0])
-                # Generate tasks immediately for new vehicles
-                new_v.generate_tasks()
-                vehicle_dict[vid] = new_v
-            else:
-                # Update position
-                vehicle_dict[vid].position = np.array([pos[0], pos[1], 0])
+            try:
+                pos = traci.vehicle.getPosition(vid)
+                if vid not in vehicle_dict:
+                    # New vehicle found in SUMO
+                    new_v = Vehicle(vid)
+                    new_v.position = np.array([pos[0], pos[1], 0])
+                    # Note: Task generation is handled centrally in Environment, not here.
+                    vehicle_dict[vid] = new_v
+                else:
+                    # Update position
+                    vehicle_dict[vid].position = np.array([pos[0], pos[1], 0])
+            except traci.exceptions.TraCIException:
+                # Vehicle might have left in the exact millisecond between getIDList and getPosition
+                continue
 
         return vehicle_dict
+
+    def add_uavs_to_sumo(self, uavs):
+        """Add UAVs to SUMO simulation after they're created."""
+        if SIMULATION_MODE != 'SUMO':
+            return
+
+        for uav in uavs:
+            uav_id = f"uav_{uav.id}"
+            try:
+                # Check if UAV already exists
+                if uav_id not in traci.vehicle.getIDList():
+                    traci.vehicle.add(uav_id, "dummy_route", typeID="UAV_TYPE")
+                    traci.vehicle.setColor(uav_id, (0, 255, 0, 255))
+                    # Move to initial position
+                    traci.vehicle.moveToXY(uav_id, "", -1, uav.position[0], uav.position[1], keepRoute=2)
+            except traci.exceptions.TraCIException as e:
+                logger.error(f"Failed to add UAV {uav_id} during reset: {e}")
 
     def close(self):
         if SIMULATION_MODE == 'SUMO':
             try:
-                traci.close()
+                if traci.isLoaded():
+                    traci.close()
             except:
                 pass

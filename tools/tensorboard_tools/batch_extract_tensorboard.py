@@ -77,6 +77,11 @@ def main():
 
     args = parser.parse_args()
 
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    extract_script = os.path.join(script_dir, 'extract_tensorboard_graphs.py')
+    compare_script = os.path.join(script_dir, 'compare_tensorboard_runs.py')
+
     # Validate runs directory
     if not os.path.exists(args.runs_dir):
         print(f"Error: Runs directory not found: {args.runs_dir}")
@@ -115,7 +120,7 @@ def main():
 
         # Build command
         cmd = [
-            'python', 'extract_tensorboard_graphs.py',
+            'python', extract_script,
             '--logdir', log_path,
             '--output_dir', output_dir,
             '--smooth', str(args.smooth),
@@ -182,7 +187,7 @@ def main():
         # Create comparison output directory (already defined above)
 
         # Build comparison command
-        cmd = ['python', 'compare_tensorboard_runs.py']
+        cmd = ['python', compare_script]
         cmd.extend(['--logdirs'] + successful_logs)
         cmd.extend(['--labels'] + successful_labels)
         cmd.extend(['--output_dir', comparison_dir])

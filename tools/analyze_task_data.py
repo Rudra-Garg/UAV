@@ -3,11 +3,16 @@
 Reads the generated task_request_data.csv and performs a detailed
 statistical analysis to validate the characteristics of the dataset.
 """
+import os
+
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-INPUT_FILENAME = "../data/task_request_data.csv"
+from config import TASK_REQUEST_DATA_FILE
+
+INPUT_FILENAME = TASK_REQUEST_DATA_FILE
+os.makedirs("results", exist_ok=True)
 
 
 def analyze_dataset():
@@ -93,7 +98,7 @@ def analyze_dataset():
     plt.title('Overall Service Popularity Distribution', fontsize=16)
     plt.xlabel('Service ID')
     plt.ylabel('Number of Requests')
-    plt.savefig('analysis_service_distribution.png')
+    plt.savefig('results/analysis_service_distribution.png')
     print("  ✅ Saved service distribution plot to 'analysis_service_distribution.png'")
     plt.close()
 
@@ -110,7 +115,7 @@ def analyze_dataset():
     plt.title(f'Transition Probability Matrix (Top {top_n} Services)', fontsize=16)
     plt.xlabel('Next Service')
     plt.ylabel('Current Service')
-    plt.savefig('analysis_transition_heatmap.png')
+    plt.savefig('results/analysis_transition_heatmap.png')
     print("  ✅ Saved transition heatmap to 'analysis_transition_heatmap.png'")
     plt.close()
 

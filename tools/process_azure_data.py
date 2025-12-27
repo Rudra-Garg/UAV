@@ -1,13 +1,15 @@
 import os
+import sys
 
 import numpy as np
 import pandas as pd
 
-from config import AZURE_MATRIX_FILE, AZURE_META_FILE
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from config import *
 
 # You must provide the path to your raw Azure CSV here
 # If you don't have it, the DemandGenerator will fallback to random noise.
-INPUT_FILE = "D:/azurefunctions-dataset2019.tar/invocations_per_function_md.anon.d01.csv"
+INPUT_FILE = "D:/azurefunctions-dataset2019.tar/azurefunctions-dataset2019/invocations_per_function_md.anon.d01.csv"
 NUM_SERVICES_TO_KEEP = 20
 
 

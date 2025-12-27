@@ -41,8 +41,6 @@ class VECNEnvironment:
         self.request_history.clear()
 
         # 1. Reset Physics (Spawns Vehicles)
-        # Physics connector returns a LIST or DICT depending on implementation
-        # Let's standardize on DICT {id: Vehicle}
         raw_vehicles = self.physics.reset(num_vehicles)
         if isinstance(raw_vehicles, list):
             self.vehicles = {v.id: v for v in raw_vehicles}
@@ -53,6 +51,9 @@ class VECNEnvironment:
         self.uavs = [UAV(i) for i in range(num_uavs)]
         if self.uavs and self.vehicles:
             self._deploy_uavs_clustered()
+
+        # 2.5 ADD UAVs TO SUMO IMMEDIATELY AFTER DEPLOYMENT
+        self.physics.add_uavs_to_sumo(self.uavs)
 
         # 3. Generate Initial Tasks
         self._generate_tasks_for_all()

@@ -1,19 +1,20 @@
-# train_cache_predictor.py
 import multiprocessing as mp
-import os
+
 import numpy as np
-import torch
+import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
-from config import NUM_SERVICE_TYPES, NUM_CONTENT_TYPES, NUM_ZONES, DEVICE
-from cache_predictor import LSTMCachePredictor
-import pandas as pd
+import os
+from config import *
+from prediction import LSTMCachePredictor
 
+
+os.makedirs("models", exist_ok=True)
 # --- Configuration ---
-INPUT_DATA_FILE = "../data/task_request_data.csv"
-OUTPUT_MODEL_FILE = "../lstm_cache_predictor.pth"
+INPUT_DATA_FILE = TASK_REQUEST_DATA_FILE
+OUTPUT_MODEL_FILE = os.path.join("models", "lstm_cache_predictor.pth")
 TRAINING_EPOCHS = 20  # Increased epochs
 BATCH_SIZE = 1024
 

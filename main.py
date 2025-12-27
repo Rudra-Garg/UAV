@@ -1,4 +1,3 @@
-# main.py
 import datetime
 import logging
 import time
@@ -19,11 +18,16 @@ if VISUALIZATION and SIMULATION_MODE == 'PYTHON_KINEMATIC':
     from visualization import Visualizer
 
 # --- Logging Setup ---
+os.makedirs("logs", exist_ok=True)
+
+# Generate experiment name with simulation mode, caching mode, and timestamp
+experiment_name = get_experiment_name()
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(f"training_log_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.log"),
+        logging.FileHandler(f"logs/training_log_{experiment_name}.log"),
         logging.StreamHandler()
     ]
 )
@@ -34,9 +38,13 @@ def run_training():
     logger.info(f"--- STARTING TRAINING ---")
     logger.info(f"Mode: {SIMULATION_MODE} | Caching: {'PREDICTIVE' if USE_PREDICTIVE_CACHING else 'REACTIVE'}")
 
-    # 1. Setup TensorBoard
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    writer = SummaryWriter(f"runs/experiment_{timestamp}")
+    # 1. Setup TensorBoard and save paths
+    # Create a specific folder for this run with simulation mode, caching mode, and timestamp
+    session_save_path = os.path.join(MODEL_SAVE_PATH, f"experiment_{experiment_name}")
+    os.makedirs(session_save_path, exist_ok=True)
+
+    logger.info(f"Models will be saved to: {session_save_path}")
+    writer = SummaryWriter(f"runs/experiment_{experiment_name}")
 
     # 2. Initialize Environment & Agents
     env = VECNEnvironment()
@@ -45,14 +53,14 @@ def run_training():
     # 3. Initialize Predictor (Optional)
     predictor = None
     if USE_PREDICTIVE_CACHING:
-        model_path = "lstm_cache_predictor.pth"  # Ensure this exists (trained via train_cache_predictor.py)
+        model_path = "models/lstm_cache_predictor.pth"  # Ensure this exists (trained via train_cache_predictor.py)
         if os.path.exists(model_path):
             predictor = LSTMCachePredictor().to(DEVICE)
             predictor.load_state_dict(torch.load(model_path, map_location=DEVICE))
             predictor.eval()
-            logger.info("✅ LSTM Predictor loaded successfully.")
+            logger.info(" LSTM Predictor loaded successfully.")
         else:
-            logger.warning(f"⚠️ Predictor model not found at {model_path}. Caching will fallback to random/reactive.")
+            logger.warning(f" Predictor model not found at {model_path}. Caching will fallback to random/reactive.")
 
     # 4. Initialize Visualizer (Only for Python Mode)
     visualizer = None
@@ -162,19 +170,27 @@ def run_training():
             writer.add_scalar(k, v, episode)
 
         print(
-            f"\rEpisode {episode}/{TOTAL_EPISODES} | Avg Profit: {avg_score:.2f} | UAVs: {num_uavs} | ε: {ddqn_agent.epsilon:.2f}",
-            end="")
+            f"\rEpisode {episode}/{TOTAL_EPISODES} | Avg Profit: {avg_score:.2f} | UAVs: {num_uavs} | ε: {ddqn_agent.epsilon:.2f}")
 
         if episode % 100 == 0:
             logger.info(f"Ep {episode} Summary: Profit={avg_score:.2f}, UAVs={num_uavs}")
             # Save Checkpoints
-            ddqn_agent.save(MODEL_SAVE_PATH)
+            ddqn_agent.save(session_save_path)
 
     # Cleanup
     env.close()
     if visualizer: visualizer.close()
     writer.close()
     logger.info("Training Complete.")
+    print("\n--- Saving Final Models ---")
+    ddqn_agent.save(session_save_path)
+
+    # Save the MADDPG controller (using the last active one)
+    if maddpg_controller:
+        # Create a specific folder for this specific agent count (e.g. maddpg_3_agents)
+        maddpg_sub_dir = os.path.join(session_save_path, f"maddpg_{maddpg_controller.num_agents}_agents")
+        maddpg_controller.save(maddpg_sub_dir)
+        print(f"Saved MADDPG models to {maddpg_sub_dir}")
 
 
 if __name__ == "__main__":
