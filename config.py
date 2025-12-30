@@ -19,11 +19,11 @@ import torch
 
 # --- Simulation Mode ---
 # Options: 'SUMO', 'PYTHON_KINEMATIC'
-SIMULATION_MODE = 'SUMO'
+SIMULATION_MODE = 'PYTHON_KINEMATIC'
 
 # --- Caching Mode ---
 # If True, uses the LSTM model to pre-fetch content.
-USE_PREDICTIVE_CACHING = False
+USE_PREDICTIVE_CACHING = True
 
 # --- Hardware Configuration ---
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -41,7 +41,7 @@ SAVE_VISUALIZATION_IMAGES = True
 
 AREA_WIDTH = 10000
 AREA_HEIGHT = 10000
-TOTAL_EPISODES = 5
+TOTAL_EPISODES = 1000
 INNER_STEPS = 100
 
 # ========================================================================================
@@ -57,7 +57,7 @@ UAV_COMPUTATIONAL_RESOURCES = 2.25e9
 UAV_ENERGY_CAPACITY_JOULES = (800000.0, 1000000.0)
 
 # --- Vehicle Fleet ---
-NUM_VEHICLES = 100  # Default target number of vehicles
+NUM_VEHICLES = 200  # Default target number of vehicles
 VEHICLE_MIN_SPEED = 1.5
 VEHICLE_MAX_SPEED = 3.0
 

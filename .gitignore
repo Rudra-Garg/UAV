@@ -170,3 +170,10 @@ sumo_scenario/
 repo_*
 *.zip
 tree.txt
+models/exp*
+*.out
+logs/
+visualizations_snapshots/
+!models/typemap.xml
+!models/trips.trips.xml
+runs/

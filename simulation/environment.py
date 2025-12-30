@@ -33,7 +33,7 @@ class VECNEnvironment:
         self.request_history = deque(maxlen=PREDICTION_SEQUENCE_LENGTH * 2)
 
     def reset(self, num_uavs=0, num_vehicles=NUM_VEHICLES):
-        logger.info(f"Resetting Env: {num_uavs} UAVs, {num_vehicles} Vehicles. Mode: {SIMULATION_MODE}")
+        logger.debug(f"Resetting Env: {num_uavs} UAVs, {num_vehicles} Vehicles. Mode: {SIMULATION_MODE}")
 
         self.time_step = 0
         self.task_manager.reset_stats()

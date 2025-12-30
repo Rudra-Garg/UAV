@@ -8,3 +8,5 @@ pygame
 tensorboard
 pandas
 traci
+streamlit
+plotly

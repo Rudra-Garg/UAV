@@ -38,6 +38,16 @@ def run_training():
     logger.info(f"--- STARTING TRAINING ---")
     logger.info(f"Mode: {SIMULATION_MODE} | Caching: {'PREDICTIVE' if USE_PREDICTIVE_CACHING else 'REACTIVE'}")
 
+    # Determine logging interval based on total episodes
+    if TOTAL_EPISODES >= 100:
+        log_interval = 100
+    elif TOTAL_EPISODES >= 10:
+        log_interval = 10
+    else:
+        log_interval = 1
+    
+    logger.info(f"Total Episodes: {TOTAL_EPISODES} | Logging every {log_interval} episodes")
+
     # 1. Setup TensorBoard and save paths
     # Create a specific folder for this run with simulation mode, caching mode, and timestamp
     session_save_path = os.path.join(MODEL_SAVE_PATH, f"experiment_{experiment_name}")
@@ -163,18 +173,35 @@ def run_training():
         writer.add_scalar('Profit/Episode', outer_reward, episode)
         writer.add_scalar('Profit/Average_100', avg_score, episode)
         writer.add_scalar('System/UAVs_Deployed', num_uavs, episode)
+        
+        # Time metrics
+        elapsed_time = time.time() - start_time
+        avg_time_per_episode = elapsed_time / episode
+        remaining_episodes = TOTAL_EPISODES - episode
+        estimated_time_left = avg_time_per_episode * remaining_episodes
+        
+        writer.add_scalar('Time/Elapsed_Seconds', elapsed_time, episode)
+        writer.add_scalar('Time/Estimated_Remaining_Seconds', estimated_time_left, episode)
+        writer.add_scalar('Time/Average_Seconds_Per_Episode', avg_time_per_episode, episode)
 
         # Detailed stats from environment
         stats = env.get_episode_statistics()
         for k, v in stats.items():
             writer.add_scalar(k, v, episode)
 
-        print(
-            f"\rEpisode {episode}/{TOTAL_EPISODES} | Avg Profit: {avg_score:.2f} | UAVs: {num_uavs} | ε: {ddqn_agent.epsilon:.2f}")
-
-        if episode % 100 == 0:
-            logger.info(f"Ep {episode} Summary: Profit={avg_score:.2f}, UAVs={num_uavs}")
-            # Save Checkpoints
+        # Only print/log at the determined interval
+        if episode % log_interval == 0 or episode == 1:
+            # Format time strings for console output
+            elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
+            remaining_str = time.strftime("%H:%M:%S", time.gmtime(estimated_time_left))
+            
+            print(
+                f"Episode {episode}/{TOTAL_EPISODES} | Avg Profit: {avg_score:.2f} | UAVs: {num_uavs} | ε: {ddqn_agent.epsilon:.2f} | "
+                f"Elapsed: {elapsed_str} | ETA: {remaining_str}")
+            logger.info(f"Ep {episode} Summary: Profit={avg_score:.2f}, UAVs={num_uavs}, Elapsed={elapsed_str}, ETA={remaining_str}")
+            
+        # Save checkpoints every 100 episodes (or at log_interval if < 100)
+        if episode % max(100, log_interval) == 0:
             ddqn_agent.save(session_save_path)
 
     # Cleanup

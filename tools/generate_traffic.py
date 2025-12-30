@@ -82,7 +82,7 @@ def generate_real_world_scenarios():
     os.makedirs(SCENARIO_OUTPUT_DIR, exist_ok=True)
 
     # Typemap is needed to map OSM road types to SUMO properties
-    typemap_path = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "typemap.xml"))
+    typemap_path = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "sumo_scenario", "typemap.xml"))
     if not os.path.exists(typemap_path):
         print(f"✗ CRITICAL ERROR: 'typemap.xml' not found at {typemap_path}.")
         return False
