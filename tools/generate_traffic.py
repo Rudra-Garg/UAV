@@ -138,11 +138,14 @@ def generate_real_world_scenarios():
         # --- 5. Generate Random Vehicle Trips ---
         print(f"  -> Generating random traffic routes...")
         try:
+            # Use 2x INNER_STEPS to ensure vehicles remain throughout the episode
+            # This prevents SUMO from terminating early due to no remaining events
+            route_end_time = INNER_STEPS * 2
             subprocess.run([
                 sys.executable, os.path.join(sumo_tools_path, 'randomTrips.py'),
                 '-n', net_file,
                 '-r', route_file,
-                '-e', str(INNER_STEPS),  # End time matches episode length
+                '-e', str(route_end_time),  # Extended end time to prevent early termination
                 '-p', '0.5',  # Period: spawn a car every 0.5 seconds roughly
                 '--vehicle-class', 'passenger',
                 '--min-distance', '500',  # Min trip distance in meters

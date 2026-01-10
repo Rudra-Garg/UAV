@@ -50,6 +50,43 @@ class LSTMCachePredictor(nn.Module):
 
         return service_preds, content_preds
 
+    def predict_top_k(self, recent_requests, zone_id, k_services=5, k_content=5):
+        """
+        Predict top-k services and content types based on recent requests.
+        
+        Args:
+            recent_requests: List of (service_id, zone_id) tuples
+            zone_id: Current zone ID for context
+            k_services: Number of top services to return
+            k_content: Number of top content types to return
+            
+        Returns:
+            top_services: List of top-k service IDs
+            top_content: List of top-k content IDs
+        """
+        self.eval()
+        with torch.no_grad():
+            # Extract service IDs and zone IDs from recent requests
+            service_ids = [req[0] for req in recent_requests]
+            zone_ids = [req[1] for req in recent_requests]
+            
+            # Convert to tensors (batch size = 1)
+            service_seq = torch.tensor([service_ids], dtype=torch.long)
+            zone_seq = torch.tensor([zone_ids], dtype=torch.long)
+            
+            # Get predictions
+            service_preds, content_preds = self.forward(service_seq, zone_seq)
+            
+            # Get top-k services
+            _, top_service_indices = torch.topk(service_preds[0], min(k_services, service_preds.size(1)))
+            top_services = top_service_indices.tolist()
+            
+            # Get top-k content
+            _, top_content_indices = torch.topk(content_preds[0], min(k_content, content_preds.size(1)))
+            top_content = top_content_indices.tolist()
+            
+        return top_services, top_content
+
 
 # --- Helper functions for data processing ---
 def _create_sequences_chunk(args):

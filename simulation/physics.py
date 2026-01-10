@@ -3,44 +3,85 @@ import random
 
 import numpy as np
 
+import config
 from config import *
 from simulation.entities import Vehicle
 
-# Conditional import for SUMO
-if SIMULATION_MODE == 'SUMO':
-    try:
-        import traci
-        import traci.exceptions
-    except ImportError:
-        print("⚠️ SUMO (traci) not found. Switch SIMULATION_MODE to 'PYTHON_KINEMATIC' if you don't have SUMO.")
+# Try to import traci - will be used if SIMULATION_MODE is 'SUMO'
+traci = None
+try:
+    import traci as _traci
+    import traci.exceptions
+    traci = _traci
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 
 
+def _wait_for_port(port, timeout=5):
+    """Wait until the port is available."""
+    import socket
+    import time
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+        result = sock.connect_ex(('localhost', port))
+        sock.close()
+        if result != 0:  # Port is free (connection refused)
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _get_simulation_mode():
+    """Get the current simulation mode from config."""
+    return config.SIMULATION_MODE
+
+
+def _ensure_traci():
+    """Ensure traci is available when needed."""
+    global traci
+    if traci is None:
+        try:
+            import traci as _traci
+            import traci.exceptions
+            traci = _traci
+        except ImportError:
+            raise ImportError("⚠️ SUMO (traci) not found. Install SUMO or switch SIMULATION_MODE to 'PYTHON_KINEMATIC'.")
+
+
 class PhysicsConnector:
-    def __init__(self, width, height):
+    def __init__(self, width, height, sumo_port=None):
         self.width = width
         self.height = height
         self.sumo_cmd = None
+        self.sumo_port = sumo_port if sumo_port is not None else 8813
+        self._sumo_ended = False  # Track if SUMO simulation has ended
 
-        if SIMULATION_MODE == 'SUMO':
+        if _get_simulation_mode() == 'SUMO':
+            _ensure_traci()
             self._setup_sumo_cmd()
 
     def _setup_sumo_cmd(self):
         sumo_binary = "sumo-gui" if VISUALIZATION else "sumo"
         self.sumo_cmd = [
             sumo_binary,
-            "-c", "sumo_scenario/grid.sumocfg",  # Placeholder, updated in reset
+            "-c", "sumo_scenario/grid.sumocfg",
             "--step-length", "1",
             "--quit-on-end", "--start",
             "--no-warnings", "--no-step-log"
+            # Note: --remote-port is set by traci.start(port=...) automatically
         ]
 
     def reset(self, num_vehicles):
         """Resets the physics engine and returns initial list of vehicles."""
         vehicles = []
 
-        if SIMULATION_MODE == 'SUMO':
+        if _get_simulation_mode() == 'SUMO':
+            _ensure_traci()
+            self._setup_sumo_cmd()  # Ensure sumo_cmd is set up
             self._reset_sumo()
             # In SUMO, vehicles are spawned by the .rou.xml files loaded by TraCI
             # Initial step to load network and spawn initial vehicles
@@ -54,11 +95,17 @@ class PhysicsConnector:
         return vehicles
 
     def _reset_sumo(self):
+        import time
+        self._sumo_ended = False  # Reset flag on new simulation
         try:
             if traci.isLoaded():
                 traci.close()
         except Exception:
             pass
+        
+        # Wait for port to be fully released
+        if not _wait_for_port(self.sumo_port, timeout=3):
+            logger.warning(f"Port {self.sumo_port} may still be in use, proceeding anyway...")
 
         # Select random city
         city = random.choice(SUMO_SCENARIO_POOL)
@@ -66,8 +113,12 @@ class PhysicsConnector:
 
         # Fallback if specific city file missing
         if not os.path.exists(config_path):
-            logger.warning(f"Config {config_path} not found. Using default grid.")
+            logger.error(f"CRITICAL: SUMO Config file not found: {config_path}")
+            logger.error("Please run: python tools/generate_traffic.py")
+            # Fallback to grid if specific city missing
             config_path = "sumo_scenario/grid.sumocfg"
+            if not os.path.exists(config_path):
+                raise FileNotFoundError(f"No SUMO configuration files found in sumo_scenario/")
 
         self.sumo_cmd[2] = config_path
         logger.info(f"Starting SUMO: {city}")
@@ -142,7 +193,23 @@ class PhysicsConnector:
     def step(self, uavs, vehicles):
         """Advances physics by one step."""
 
-        if SIMULATION_MODE == 'SUMO':
+        if _get_simulation_mode() == 'SUMO':
+            # Check if SUMO has already ended
+            if self._sumo_ended:
+                # Continue with existing vehicle positions (no movement)
+                return vehicles
+            
+            # Check if simulation has ended (no more scheduled events)
+            try:
+                min_expected = traci.simulation.getMinExpectedNumber()
+                if min_expected == 0:
+                    logger.warning("SUMO simulation has no more vehicles/events. Freezing vehicle positions.")
+                    self._sumo_ended = True
+                    return vehicles
+            except (traci.exceptions.TraCIException, traci.exceptions.FatalTraCIError):
+                self._sumo_ended = True
+                return vehicles
+            
             # 1. Move UAVs (they should already exist from reset)
             for uav in uavs:
                 uav_id = f"uav_{uav.id}"
@@ -157,6 +224,7 @@ class PhysicsConnector:
                 traci.simulationStep()
             except traci.exceptions.FatalTraCIError:
                 logger.error("SUMO simulation crashed or closed unexpectedly.")
+                self._sumo_ended = True
                 return vehicles
 
             # 3. Sync Vehicles
@@ -206,7 +274,7 @@ class PhysicsConnector:
 
     def add_uavs_to_sumo(self, uavs):
         """Add UAVs to SUMO simulation after they're created."""
-        if SIMULATION_MODE != 'SUMO':
+        if _get_simulation_mode() != 'SUMO':
             return
 
         for uav in uavs:
@@ -222,9 +290,32 @@ class PhysicsConnector:
                 logger.error(f"Failed to add UAV {uav_id} during reset: {e}")
 
     def close(self):
-        if SIMULATION_MODE == 'SUMO':
+        if _get_simulation_mode() == 'SUMO':
             try:
-                if traci.isLoaded():
+                if traci is not None and traci.isLoaded():
                     traci.close()
-            except:
-                pass
+                # Longer delay to ensure port is fully released before next episode
+                import time
+                time.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"Error closing SUMO: {e}")
+                # Only force kill if we have a known port
+                try:
+                    import subprocess
+                    import psutil
+                    # Find and kill only SUMO processes using our specific port
+                    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                        try:
+                            if 'sumo' in proc.info['name'].lower():
+                                cmdline = proc.info['cmdline']
+                                if cmdline and str(self.sumo_port) in ' '.join(cmdline):
+                                    proc.kill()
+                                    logger.info(f"Killed SUMO process on port {self.sumo_port}")
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                except ImportError:
+                    # If psutil not available, use pkill with caution
+                    import subprocess
+                    subprocess.run(['pkill', '-9', 'sumo'], stderr=subprocess.DEVNULL)
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to cleanup SUMO processes: {cleanup_error}")

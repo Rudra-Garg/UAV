@@ -4,6 +4,7 @@ from collections import deque
 import numpy as np
 from scipy.cluster.vq import kmeans
 
+import config
 from config import *
 from prediction import DemandGenerator
 from .comms import CommunicationModel
@@ -15,12 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 class VECNEnvironment:
-    def __init__(self):
+    def __init__(self, sumo_port=None):
         self.width = AREA_WIDTH
         self.height = AREA_HEIGHT
 
         # Components
-        self.physics = PhysicsConnector(self.width, self.height)
+        self.physics = PhysicsConnector(self.width, self.height, sumo_port=sumo_port)
         self.task_manager = TaskManager()
         self.demand_generator = DemandGenerator()
         self.comm = CommunicationModel()
@@ -33,7 +34,7 @@ class VECNEnvironment:
         self.request_history = deque(maxlen=PREDICTION_SEQUENCE_LENGTH * 2)
 
     def reset(self, num_uavs=0, num_vehicles=NUM_VEHICLES):
-        logger.debug(f"Resetting Env: {num_uavs} UAVs, {num_vehicles} Vehicles. Mode: {SIMULATION_MODE}")
+        logger.debug(f"Resetting Env: {num_uavs} UAVs, {num_vehicles} Vehicles. Mode: {config.SIMULATION_MODE}")
 
         self.time_step = 0
         self.task_manager.reset_stats()
@@ -212,15 +213,33 @@ class VECNEnvironment:
 
     def get_episode_statistics(self):
         completed = 0
+        dropped = 0
         for v in self.vehicles.values():
             completed += sum(1 for t in v.tasks if t.is_completed)
+            dropped += sum(1 for t in v.tasks if hasattr(t, 'dropped') and t.dropped)
+        
+        # Calculate average energy remaining
+        avg_energy = 0
+        if len(self.uavs) > 0:
+            avg_energy = np.mean([uav.current_energy for uav in self.uavs])
 
         return {
             'Sim/active_vehicles': len(self.vehicles),
+            'tasks_completed': completed,
+            'tasks_dropped': dropped,
             'Tasks/completed': completed,
+            'Tasks/dropped': dropped,
             'Offloading/local': self.task_manager.local_count,
-            'Offloading/cloud': self.task_manager.cloud_count
+            'Offloading/cloud': self.task_manager.cloud_count,
+            'Offloading/relay': self.task_manager.relay_count,
+            'cache_hits': self.task_manager.cache_hits,
+            'cache_requests': self.task_manager.cache_requests,
+            'avg_energy_remaining': avg_energy
         }
+
+    def set_predictor(self, predictor):
+        """Set the cache predictor for this environment."""
+        self.task_manager.predictor = predictor
 
     def close(self):
         self.physics.close()

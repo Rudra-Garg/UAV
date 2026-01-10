@@ -47,6 +47,7 @@ st.set_page_config(
 # GLOBAL CONSTANTS
 # ============================================================================
 MAIN_SCRIPT = "main.py"
+MAIN_SCRIPT_PARALLEL = "main_parallel.py"
 CONFIG_FILE = "config.py"
 LOGS_DIR = "logs"
 RUNS_DIR = "runs"
@@ -98,32 +99,34 @@ def get_training_pid():
     if os.path.exists(PID_FILE):
         try:
             with open(PID_FILE, 'r') as f:
-                pid = int(f.read().strip())
+                lines = f.read().strip().split('\n')
+                pid = int(lines[0])
             if is_process_running(pid):
                 return pid
             else:
                 os.remove(PID_FILE)
-        except (ValueError, FileNotFoundError):
+        except (ValueError, FileNotFoundError, IndexError):
             pass
     return None
 
-def start_training():
+def start_training(script_name=MAIN_SCRIPT):
     """Start the training process in background."""
     try:
         # Start the process
         process = subprocess.Popen(
-            [sys.executable, MAIN_SCRIPT],
+            [sys.executable, script_name],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True,
             preexec_fn=os.setsid  # Create new process group
         )
         
-        # Save PID
+        # Save PID and script name
         with open(PID_FILE, 'w') as f:
-            f.write(str(process.pid))
+            f.write(f"{process.pid}\n{script_name}")
         
-        return process.pid, "Training started successfully!"
+        mode = "Parallel" if "parallel" in script_name else "Single-core"
+        return process.pid, f"{mode} training started successfully!"
     except Exception as e:
         return None, f"Error starting training: {str(e)}"
 
@@ -251,8 +254,25 @@ def main():
         else:
             st.info("⏸️ Training is not running")
             
+            # Training mode selection
+            st.markdown("**Select Training Mode:**")
+            training_mode = st.radio(
+                "Mode",
+                ["Single-Core", "Parallel (Multi-Core)"],
+                help="Parallel mode uses multiple CPU cores for faster training",
+                label_visibility="collapsed"
+            )
+            
+            # Show info about selected mode
+            if training_mode == "Parallel (Multi-Core)":
+                import multiprocessing as mp
+                num_cores = mp.cpu_count()
+                st.info(f"ℹ️ Will use up to {num_cores-1} of {num_cores} CPU cores")
+            
+            script = MAIN_SCRIPT_PARALLEL if training_mode == "Parallel (Multi-Core)" else MAIN_SCRIPT
+            
             if st.button("▶️ Start Training", type="primary", use_container_width=True):
-                pid, message = start_training()
+                pid, message = start_training(script)
                 if pid:
                     st.success(message)
                     time.sleep(1)
@@ -565,7 +585,8 @@ def show_system_info_page():
     with col2:
         st.markdown("**Files:**")
         files_info = {
-            "Main Script": MAIN_SCRIPT,
+            "Main Script (Single)": MAIN_SCRIPT,
+            "Main Script (Parallel)": MAIN_SCRIPT_PARALLEL,
             "Configuration": CONFIG_FILE,
         }
         

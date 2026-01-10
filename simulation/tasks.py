@@ -11,11 +11,15 @@ class TaskManager:
         self.local_count = 0
         self.relay_count = 0
         self.cloud_count = 0
+        self.cache_hits = 0
+        self.cache_requests = 0
 
     def reset_stats(self):
         self.local_count = 0
         self.relay_count = 0
         self.cloud_count = 0
+        self.cache_hits = 0
+        self.cache_requests = 0
 
     def assign_tasks(self, vehicles, uavs, current_time_step):
         """
@@ -39,10 +43,14 @@ class TaskManager:
             # Criteria: Has Service, Has Content, Has Compute
             best_local = None
             for uav in idle_uavs:
+                # Track cache requests
+                self.cache_requests += 1
+                
                 if (uav.has_service(task.service_type) and
                         uav.has_content(task.content_type) and
                         uav.F_remain >= task.cpu_cycles_req):
                     best_local = uav
+                    self.cache_hits += 1  # Cache hit!
                     break
 
             if best_local:

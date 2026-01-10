@@ -19,11 +19,11 @@ import torch
 
 # --- Simulation Mode ---
 # Options: 'SUMO', 'PYTHON_KINEMATIC'
-SIMULATION_MODE = 'PYTHON_KINEMATIC'
+SIMULATION_MODE = 'SUMO'
 
 # --- Caching Mode ---
 # If True, uses the LSTM model to pre-fetch content.
-USE_PREDICTIVE_CACHING = True
+USE_PREDICTIVE_CACHING = False
 
 # --- Hardware Configuration ---
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -216,4 +216,4 @@ EVAL_SCENARIO_VEHICLES = range(50, 121, 10)  # [50, 60, ..., 120]
 # Offloading Logic
 USE_SIMPLIFIED_OFFLOADING = True
 LATENCY_SCALING_FACTOR = 0.000001
-CLOUD_COMPUTE_LATENCY = 5
+CLOUD_COMPUTE_LATENCY = 30

@@ -3,7 +3,7 @@
 
 # Activate virtual environment
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-if [ -d "$SCRIPT_DIR/venv" ]; then
+if [ -d "$SCRIPT_DIR/../venv" ]; then
     source "$SCRIPT_DIR/venv/bin/activate"
     echo "✓ Virtual environment activated"
 else

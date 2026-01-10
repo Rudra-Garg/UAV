@@ -56,6 +56,34 @@ stop_service() {
 stop_service "Dashboard" "$DASHBOARD_PID_FILE"
 stop_service "TensorBoard" "$TENSORBOARD_PID_FILE"
 
+# Stop training if running
+if [ -f ".training_pid" ]; then
+    echo ""
+    echo -e "${YELLOW}Found running training process...${NC}"
+    PID=$(head -n 1 .training_pid)
+    if ps -p $PID > /dev/null 2>&1; then
+        echo -e "${YELLOW}Stopping training (PID: $PID)...${NC}"
+        kill -TERM $PID 2>/dev/null
+        sleep 2
+        if ps -p $PID > /dev/null 2>&1; then
+            kill -9 $PID 2>/dev/null
+        fi
+        if ! ps -p $PID > /dev/null 2>&1; then
+            echo -e "${GREEN}✓ Training stopped${NC}"
+        fi
+    fi
+    rm -f .training_pid
+fi
+
+# Kill any remaining SUMO processes
+SUMO_PIDS=$(pgrep -f "sumo" 2>/dev/null)
+if [ ! -z "$SUMO_PIDS" ]; then
+    echo ""
+    echo -e "${YELLOW}Cleaning up SUMO processes...${NC}"
+    pkill -9 sumo 2>/dev/null
+    echo -e "${GREEN}✓ SUMO processes terminated${NC}"
+fi
+
 echo ""
 echo -e "${GREEN}All services stopped${NC}"
 echo ""

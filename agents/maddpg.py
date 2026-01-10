@@ -99,11 +99,47 @@ class MADDPGController:
         states, actions, rewards, next_states, dones = self.memory.sample()
 
         # Reshape tensors to reflect the multi-agent structure
-        states = states.view(MADDPG_BATCH_SIZE, self.num_agents, self.state_dim)
-        actions = actions.view(MADDPG_BATCH_SIZE, self.num_agents, self.action_dim)
-        rewards = rewards.view(MADDPG_BATCH_SIZE, self.num_agents, 1)
-        next_states = next_states.view(MADDPG_BATCH_SIZE, self.num_agents, self.state_dim)
-        dones = dones.view(MADDPG_BATCH_SIZE, self.num_agents, 1)
+        # Handle both flattened and already-structured data
+        if states.dim() == 2:
+            # Data is flattened: [batch_size, num_agents * state_dim]
+            states = states.view(MADDPG_BATCH_SIZE, self.num_agents, self.state_dim)
+        elif states.dim() == 3:
+            # Data is already structured: [batch_size, num_agents, state_dim]
+            pass
+        
+        if actions.dim() == 2:
+            actions = actions.view(MADDPG_BATCH_SIZE, self.num_agents, self.action_dim)
+        elif actions.dim() == 3:
+            pass
+        
+        if rewards.dim() == 1:
+            # Scalar rewards: [batch_size] -> [batch_size, num_agents, 1]
+            rewards = rewards.unsqueeze(1).unsqueeze(2).expand(MADDPG_BATCH_SIZE, self.num_agents, 1)
+        elif rewards.dim() == 2 and rewards.shape[1] == self.num_agents:
+            # [batch_size, num_agents] -> [batch_size, num_agents, 1]
+            rewards = rewards.unsqueeze(2)
+        elif rewards.dim() == 2 and rewards.shape[1] != self.num_agents:
+            # Might be flattened or single column
+            rewards = rewards.view(MADDPG_BATCH_SIZE, self.num_agents, 1)
+        elif rewards.dim() == 3:
+            # Already correct shape
+            pass
+        
+        if next_states.dim() == 2:
+            next_states = next_states.view(MADDPG_BATCH_SIZE, self.num_agents, self.state_dim)
+        elif next_states.dim() == 3:
+            pass
+        
+        if dones.dim() == 1:
+            # Scalar dones: [batch_size] -> [batch_size, num_agents, 1]
+            dones = dones.unsqueeze(1).unsqueeze(2).expand(MADDPG_BATCH_SIZE, self.num_agents, 1)
+        elif dones.dim() == 2 and dones.shape[1] == self.num_agents:
+            # [batch_size, num_agents] -> [batch_size, num_agents, 1]
+            dones = dones.unsqueeze(2)
+        elif dones.dim() == 2 and dones.shape[1] != self.num_agents:
+            dones = dones.view(MADDPG_BATCH_SIZE, self.num_agents, 1)
+        elif dones.dim() == 3:
+            pass
 
         # --- Update Critic ---
         with torch.no_grad():
@@ -155,24 +191,24 @@ class MADDPGController:
         for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
             target_param.data.copy_(MADDPG_TAU * param.data + (1.0 - MADDPG_TAU) * target_param.data)
 
-    def save(self, directory):
+    def save(self, directory, suffix=""):
         """Saves the actor and critic networks to files."""
         if not os.path.exists(directory):
             os.makedirs(directory)
         for i, agent in enumerate(self.agents):
-            torch.save(agent.actor.state_dict(), os.path.join(directory, f'maddpg_actor_{i}.pth'))
-        torch.save(self.critic.state_dict(), os.path.join(directory, 'maddpg_critic.pth'))
-        logger.info("MADDPG models saved to directory: %s", directory)
+            torch.save(agent.actor.state_dict(), os.path.join(directory, f'maddpg_actor_{i}{suffix}.pth'))
+        torch.save(self.critic.state_dict(), os.path.join(directory, f'maddpg_critic{suffix}.pth'))
+        logger.info("MADDPG models saved to directory: %s (suffix: %s)", directory, suffix)
 
-    def load(self, directory):
+    def load(self, directory, suffix=""):
         """Loads the actor and critic networks from files."""
         for i, agent in enumerate(self.agents):
-            agent.actor.load_state_dict(torch.load(os.path.join(directory, f'maddpg_actor_{i}.pth')))
+            agent.actor.load_state_dict(torch.load(os.path.join(directory, f'maddpg_actor_{i}{suffix}.pth')))
             agent.target_actor.load_state_dict(agent.actor.state_dict())  # Copy to target net
             agent.actor.eval()
             agent.target_actor.eval()
-        self.critic.load_state_dict(torch.load(os.path.join(directory, 'maddpg_critic.pth')))
+        self.critic.load_state_dict(torch.load(os.path.join(directory, f'maddpg_critic{suffix}.pth')))
         self.target_critic.load_state_dict(self.critic.state_dict())  # Copy to target net
         self.critic.eval()
         self.target_critic.eval()
-        logger.info("MADDPG models loaded from directory: %s", directory)
+        logger.info("MADDPG models loaded from directory: %s (suffix: %s)", directory, suffix)

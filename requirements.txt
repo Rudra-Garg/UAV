@@ -10,3 +10,4 @@ pandas
 traci
 streamlit
 plotly
+psutil

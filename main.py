@@ -2,6 +2,7 @@ import datetime
 import logging
 import time
 from collections import deque
+import gc
 
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
@@ -81,11 +82,18 @@ def run_training():
     scores_window = deque(maxlen=100)
     maddpg_controller = None
 
+    # Before the main loop
+    maddpg_controllers = {}  # Store controllers by num_agents
+
     start_time = time.time()
 
     # --- MAIN LOOP ---
     for episode in range(1, TOTAL_EPISODES + 1):
-
+    
+        # A. Clean up previous episode's SUMO process
+        if episode > 1:
+            env.physics.close()
+    
         # A. Outer Loop (DDQN): Choose Num UAVs
         outer_state = env.get_ddqn_state()
         num_uavs = ddqn_agent.select_action(outer_state) + 1
@@ -96,12 +104,14 @@ def run_training():
 
         # C. Initialize Inner Agent (MADDPG) if needed
         if num_uavs > 0:
-            # Ideally, we should persist controllers for specific K, 
-            # but for standard implementation we re-init or load from a bank.
-            # Here we re-init for simplicity of the snippet.
-            maddpg_controller = MADDPGController(num_agents=num_uavs,
-                                                 state_dim=MADDPG_STATE_DIM,
-                                                 action_dim=MADDPG_ACTION_DIM)
+            # Reuse existing controller if available
+            if num_uavs not in maddpg_controllers:
+                maddpg_controllers[num_uavs] = MADDPGController(
+                    num_agents=num_uavs,
+                    state_dim=MADDPG_STATE_DIM,
+                    action_dim=MADDPG_ACTION_DIM
+                )
+            maddpg_controller = maddpg_controllers[num_uavs]
 
             episode_actor_loss = []
             episode_critic_loss = []
@@ -203,6 +213,11 @@ def run_training():
         # Save checkpoints every 100 episodes (or at log_interval if < 100)
         if episode % max(100, log_interval) == 0:
             ddqn_agent.save(session_save_path)
+
+        # Periodic cleanup every 50 episodes
+        if episode % 50 == 0:
+            gc.collect()
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
     # Cleanup
     env.close()
